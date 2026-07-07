@@ -1,0 +1,35 @@
+# API
+fastapi
+uvicorn[standard]
+python-multipart
+
+# LangGraph
+langgraph
+langgraph-checkpoint-postgres
+psycopg[binary]
+psycopg-pool
+
+# LLM / AWS
+boto3
+
+# PDF processing
+pymupdf
+
+# Config
+pydantic-settings
+
+# Database
+sqlalchemy
+alembic
+
+# Logging
+structlog
+
+# Scraping
+firecrawl-py
+requests
+beautifulsoup4
+lxml
+
+# Utils
+typing-extensions

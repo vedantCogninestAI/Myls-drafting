@@ -1,0 +1,200 @@
+{
+  "source": "USCIS fee table sample with td data-label columns and ordered-list values",
+  "expected_row_count": 16,
+  "parsed_rows": [
+    {
+      "Filing Category": "If you are filing an E-1, E-2, E-2C, or TN petition.",
+      "Paper Filing Fee": "$1,015 plus additional fees",
+      "Online Filing Fee": "$965 plus additional fees"
+    },
+    {
+      "Filing Category": "If you are filing an E-1, E-2, E-2C, or TN petition. \u2014 If you are filing as a Small Employer or Nonprofit.",
+      "Paper Filing Fee": "$510 plus additional fees, if applicable",
+      "Online Filing Fee": "$510 plus additional fees, if applicable"
+    },
+    {
+      "Filing Category": "If you are filing an E-3 petition.",
+      "Paper Filing Fee": "$1,015 plus additional fees",
+      "Online Filing Fee": "N/A"
+    },
+    {
+      "Filing Category": "If you are filing an E-3 petition. \u2014 If you are filing as a Small Employer or Nonprofit.",
+      "Paper Filing Fee": "$510 plus additional fees, if applicable",
+      "Online Filing Fee": "N/A"
+    },
+    {
+      "Filing Category": "If you are filing an H-3 petition. (limited to 25 beneficiaries per petition)",
+      "Paper Filing Fee": "$1,015 plus additional fees",
+      "Online Filing Fee": "N/A"
+    },
+    {
+      "Filing Category": "If you are filing an H-3 petition. (limited to 25 beneficiaries per petition) \u2014 If you are filing as a Small Employer or Nonprofit.",
+      "Paper Filing Fee": "$510 plus additional fees, if applicable",
+      "Online Filing Fee": "N/A"
+    },
+    {
+      "Filing Category": "If you are filing an O petition. (limited to 1 beneficiary per petition for O-1; limited to 25 beneficiaries per petition for O-2)",
+      "Paper Filing Fee": "$1,055 plus additional fees",
+      "Online Filing Fee": "N/A"
+    },
+    {
+      "Filing Category": "If you are filing an O petition. (limited to 1 beneficiary per petition for O-1; limited to 25 beneficiaries per petition for O-2) \u2014 If you are filing as a Small Employer or Nonprofit.",
+      "Paper Filing Fee": "$530 plus additional fees, if applicable",
+      "Online Filing Fee": "N/A"
+    },
+    {
+      "Filing Category": "If you are filing a P petition. (limited to 25 beneficiaries per petition)",
+      "Paper Filing Fee": "$1,015 plus additional fees",
+      "Online Filing Fee": "N/A"
+    },
+    {
+      "Filing Category": "If you are filing a P petition. (limited to 25 beneficiaries per petition) \u2014 If you are filing as a Small Employer or Nonprofit.",
+      "Paper Filing Fee": "$510 plus additional fees, if applicable",
+      "Online Filing Fee": "N/A"
+    },
+    {
+      "Filing Category": "If you are filing a Q petition. (limited to 25 beneficiaries per petition)",
+      "Paper Filing Fee": "$1,015 plus additional fees",
+      "Online Filing Fee": "N/A"
+    },
+    {
+      "Filing Category": "If you are filing a Q petition. (limited to 25 beneficiaries per petition) \u2014 If you are filing as a Small Employer or Nonprofit.",
+      "Paper Filing Fee": "$510 plus additional fees, if applicable",
+      "Online Filing Fee": "N/A"
+    },
+    {
+      "Filing Category": "If you are filing an R petition.",
+      "Paper Filing Fee": "$510 plus additional fees, if applicable",
+      "Online Filing Fee": "$510 plus additional fees, if applicable"
+    },
+    {
+      "Filing Category": "Additional Fees: Asylum Program Fee",
+      "Paper Filing Fee": "$600",
+      "Online Filing Fee": "$600"
+    },
+    {
+      "Filing Category": "Additional Fees: If you are filing as a Nonprofit;",
+      "Paper Filing Fee": "$0",
+      "Online Filing Fee": "$0"
+    },
+    {
+      "Filing Category": "Additional Fees: If you are filing as a Small Employer.",
+      "Paper Filing Fee": "$300",
+      "Online Filing Fee": "$300"
+    }
+  ],
+  "fee_items": [
+    {
+      "form_number": "I-129",
+      "form_title": "Petition for a Nonimmigrant Worker",
+      "filing_category": "If you are filing an E-1, E-2, E-2C, or TN petition.",
+      "paper_fee": 1015.0,
+      "online_fee": 965.0
+    },
+    {
+      "form_number": "I-129",
+      "form_title": "Petition for a Nonimmigrant Worker",
+      "filing_category": "If you are filing an E-1, E-2, E-2C, or TN petition. \u2014 If you are filing as a Small Employer or Nonprofit.",
+      "paper_fee": 510.0,
+      "online_fee": 510.0
+    },
+    {
+      "form_number": "I-129",
+      "form_title": "Petition for a Nonimmigrant Worker",
+      "filing_category": "If you are filing an E-3 petition.",
+      "paper_fee": 1015.0,
+      "online_fee": null
+    },
+    {
+      "form_number": "I-129",
+      "form_title": "Petition for a Nonimmigrant Worker",
+      "filing_category": "If you are filing an E-3 petition. \u2014 If you are filing as a Small Employer or Nonprofit.",
+      "paper_fee": 510.0,
+      "online_fee": null
+    },
+    {
+      "form_number": "I-129",
+      "form_title": "Petition for a Nonimmigrant Worker",
+      "filing_category": "If you are filing an H-3 petition. (limited to 25 beneficiaries per petition)",
+      "paper_fee": 1015.0,
+      "online_fee": null
+    },
+    {
+      "form_number": "I-129",
+      "form_title": "Petition for a Nonimmigrant Worker",
+      "filing_category": "If you are filing an H-3 petition. (limited to 25 beneficiaries per petition) \u2014 If you are filing as a Small Employer or Nonprofit.",
+      "paper_fee": 510.0,
+      "online_fee": null
+    },
+    {
+      "form_number": "I-129",
+      "form_title": "Petition for a Nonimmigrant Worker",
+      "filing_category": "If you are filing an O petition. (limited to 1 beneficiary per petition for O-1; limited to 25 beneficiaries per petition for O-2)",
+      "paper_fee": 1055.0,
+      "online_fee": null
+    },
+    {
+      "form_number": "I-129",
+      "form_title": "Petition for a Nonimmigrant Worker",
+      "filing_category": "If you are filing an O petition. (limited to 1 beneficiary per petition for O-1; limited to 25 beneficiaries per petition for O-2) \u2014 If you are filing as a Small Employer or Nonprofit.",
+      "paper_fee": 530.0,
+      "online_fee": null
+    },
+    {
+      "form_number": "I-129",
+      "form_title": "Petition for a Nonimmigrant Worker",
+      "filing_category": "If you are filing a P petition. (limited to 25 beneficiaries per petition)",
+      "paper_fee": 1015.0,
+      "online_fee": null
+    },
+    {
+      "form_number": "I-129",
+      "form_title": "Petition for a Nonimmigrant Worker",
+      "filing_category": "If you are filing a P petition. (limited to 25 beneficiaries per petition) \u2014 If you are filing as a Small Employer or Nonprofit.",
+      "paper_fee": 510.0,
+      "online_fee": null
+    },
+    {
+      "form_number": "I-129",
+      "form_title": "Petition for a Nonimmigrant Worker",
+      "filing_category": "If you are filing a Q petition. (limited to 25 beneficiaries per petition)",
+      "paper_fee": 1015.0,
+      "online_fee": null
+    },
+    {
+      "form_number": "I-129",
+      "form_title": "Petition for a Nonimmigrant Worker",
+      "filing_category": "If you are filing a Q petition. (limited to 25 beneficiaries per petition) \u2014 If you are filing as a Small Employer or Nonprofit.",
+      "paper_fee": 510.0,
+      "online_fee": null
+    },
+    {
+      "form_number": "I-129",
+      "form_title": "Petition for a Nonimmigrant Worker",
+      "filing_category": "If you are filing an R petition.",
+      "paper_fee": 510.0,
+      "online_fee": 510.0
+    },
+    {
+      "form_number": "I-129",
+      "form_title": "Petition for a Nonimmigrant Worker",
+      "filing_category": "Additional Fees: Asylum Program Fee",
+      "paper_fee": 600.0,
+      "online_fee": 600.0
+    },
+    {
+      "form_number": "I-129",
+      "form_title": "Petition for a Nonimmigrant Worker",
+      "filing_category": "Additional Fees: If you are filing as a Nonprofit;",
+      "paper_fee": 0.0,
+      "online_fee": 0.0
+    },
+    {
+      "form_number": "I-129",
+      "form_title": "Petition for a Nonimmigrant Worker",
+      "filing_category": "Additional Fees: If you are filing as a Small Employer.",
+      "paper_fee": 300.0,
+      "online_fee": 300.0
+    }
+  ]
+}
