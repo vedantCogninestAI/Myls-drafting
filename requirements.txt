@@ -15,6 +15,9 @@ boto3
 # PDF processing
 pymupdf
 
+# Word doc processing
+python-docx
+
 # Config
 pydantic-settings
 
@@ -33,3 +36,4 @@ lxml
 
 # Utils
 typing-extensions
+rapidfuzz

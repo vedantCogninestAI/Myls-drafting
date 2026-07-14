@@ -8,7 +8,7 @@ from uuid import UUID
 from sqlalchemy import select
 
 from app.core.db import AsyncSessionLocal
-from app.models.fee import FormFeeAddress
+from app.models.fee import FormFee
 from app.repositories.fee import FeeRepository
 from app.services.fee.fee_service import run_fee_scrape
 
@@ -51,7 +51,7 @@ def has_item(items: list[dict], category_part: str, paper=None, online=None) -> 
     return False
 
 
-def model_to_dict(row: FormFeeAddress) -> dict:
+def model_to_dict(row: FormFee) -> dict:
     return {
         "id": row.id,
         "form_number": row.form_number,
@@ -168,9 +168,9 @@ async def main() -> None:
     OUT_DIR.mkdir(exist_ok=True)
     async with AsyncSessionLocal() as session:
         repository = FeeRepository(session)
-        print("starting DB scrape; this clears and repopulates form_fees_address", flush=True)
+        print("starting DB scrape; this clears and repopulates form_fees", flush=True)
         upserted = await run_fee_scrape(repository)
-        result = await session.execute(select(FormFeeAddress))
+        result = await session.execute(select(FormFee))
         rows = [model_to_dict(row) for row in result.scalars().all()]
 
     verdicts = build_verdicts(rows)
@@ -181,7 +181,7 @@ async def main() -> None:
     payload = {
         "generated_at": datetime.now().isoformat(),
         "source": "DB after run_fee_scrape(repository)",
-        "table": "form_fees_address",
+        "table": "form_fees",
         "upserted_count": upserted,
         "db_row_count": len(rows),
         "all_resolved": all(issue["resolved"] for issue in verdicts.values()),

@@ -8,10 +8,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import Base
 
 
-class FormFeeAddress(Base):
-    __tablename__ = "form_fees_address"
+class FormFee(Base):
+    __tablename__ = "form_fees"
     __table_args__ = (
-        UniqueConstraint("form_number", "filing_category", name="uq_form_fees_address_form_category"),
+        UniqueConstraint("form_number", "filing_category", name="uq_form_fees_form_category"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

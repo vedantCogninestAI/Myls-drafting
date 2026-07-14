@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     INGESTION_CONCURRENCY: int = 3
     CLASSIFY_PDF_LLM: bool
 
+    # Templates
+    TEMPLATE_CONCURRENCY: int
+
+    # Draft generation
+    MAX_DRAFT_REVISIONS: int = 5
+
     # USCIS fee scraping
     USCIS_FEE_CALCULATOR_URL: str = "https://www.uscis.gov/feecalculator"
     USCIS_BASE_URL: str = "https://www.uscis.gov"

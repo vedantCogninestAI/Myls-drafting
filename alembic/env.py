@@ -12,10 +12,12 @@ from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.config import settings
-from app.models.address import FormFilingAddress  # noqa: F401
+from app.models.address import FormAddress  # noqa: F401
 from app.models.base import Base
-from app.models.fee import FormFeeAddress  # noqa: F401
-from app.models.ingestion import IngestionResult  # noqa: F401
+from app.models.case import Case  # noqa: F401
+from app.models.fee import FormFee  # noqa: F401
+from app.models.ingestion import FormFields, IngestionFile  # noqa: F401
+from app.models.template import Template  # noqa: F401
 
 config = context.config
 

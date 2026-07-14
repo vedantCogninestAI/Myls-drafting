@@ -2,7 +2,8 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.address import FormFilingAddress
+from app.models.address import FormAddress
+from app.repositories.fuzzy_match import FUZZY_MATCH_THRESHOLD, FormNumberMatch, best_form_number_match
 
 
 class AddressRepository:
@@ -18,7 +19,7 @@ class AddressRepository:
         }
         rows = list(deduped.values())
 
-        stmt = insert(FormFilingAddress).values(rows)
+        stmt = insert(FormAddress).values(rows)
         stmt = stmt.on_conflict_do_update(
             index_elements=["form_number", "filing_scenario", "lockbox_name"],
             set_={
@@ -35,10 +36,21 @@ class AddressRepository:
         await self.session.commit()
         return len(rows)
 
-    async def list_all(self) -> list[FormFilingAddress]:
+    async def list_all(self) -> list[FormAddress]:
         result = await self.session.execute(
-            select(FormFilingAddress).order_by(
-                FormFilingAddress.form_number, FormFilingAddress.filing_scenario
+            select(FormAddress).order_by(
+                FormAddress.form_number, FormAddress.filing_scenario
             )
         )
         return list(result.scalars().all())
+
+    async def get_by_form_number(self, form_number: str) -> tuple[list[FormAddress], FormNumberMatch]:
+        all_rows = await self.list_all()
+        distinct_numbers = sorted({row.form_number for row in all_rows})
+        match = best_form_number_match(form_number, distinct_numbers)
+
+        if match.form_number is None or match.score < FUZZY_MATCH_THRESHOLD:
+            return [], match
+
+        matched_rows = [row for row in all_rows if row.form_number == match.form_number]
+        return matched_rows, match

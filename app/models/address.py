@@ -8,14 +8,14 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import Base
 
 
-class FormFilingAddress(Base):
-    __tablename__ = "form_filing_addresses"
+class FormAddress(Base):
+    __tablename__ = "form_address"
     __table_args__ = (
         UniqueConstraint(
             "form_number",
             "filing_scenario",
             "lockbox_name",
-            name="uq_form_filing_addresses_form_scenario_lockbox",
+            name="uq_form_address_form_scenario_lockbox",
         ),
     )
 

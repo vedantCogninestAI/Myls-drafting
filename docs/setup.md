@@ -29,17 +29,26 @@
    misreads where the credentials end and the host begins.
 
 4. **Set the remaining required env vars.** Most settings in
-   `app/config.py` have defaults, but a few don't and will crash
+   `app/config.py` have defaults. Two have no default and will crash
    `Settings()` on import if missing from `.env`:
-   - `CLASSIFY_PDF_LLM` (`true`/`false`) — toggles whether `/ingest` runs
-     OCR+classification via Bedrock, or just returns filenames as-is. Set
-     `false` if you don't have AWS Bedrock credentials configured locally.
-   - `DATABASE_URL` — see above.
+   - `CLASSIFY_PDF_LLM` (`true`/`false`) — toggles whether `/ingest` also
+     classifies each document as `exhibit`/`filed_doc` via Bedrock. OCR
+     always runs regardless of this flag; when `false`, extracted text is
+     returned with `type: null` instead of being classified.
+   - `TEMPLATE_CONCURRENCY` (int) — max sample `.docx` files parsed in
+     parallel by `POST /api/v1/template-generation/{process_type}` (see
+     `docs/templates.md`) — not an LLM call, just bounds concurrent
+     `python-docx` parsing. Same pattern as `INGESTION_CONCURRENCY`, just a
+     separate knob since it's a fully independent feature.
+
+   `DATABASE_URL` does have a default (empty string), so it won't crash
+   `Settings()` on import — but without a real value the app fails as soon
+   as it tries to connect. Set it as described above.
 
    Everything else (`AWS_*`, `SECRET_KEY`, etc.) has safe defaults for
-   local dev and isn't required unless you're actually exercising that
-   code path (e.g. AWS creds are only needed if `CLASSIFY_PDF_LLM=true`;
-   `FIRECRAWL_API_KEY` is only needed if you're hitting
+   local dev, but `AWS_*` creds are required to run `/ingest` at all
+   (OCR uses Bedrock unconditionally, regardless of `CLASSIFY_PDF_LLM`).
+   (`FIRECRAWL_API_KEY` is only needed if you're hitting
    `POST /api/v1/fees/scrape` — see `docs/scraping.md`).
 
 5. **Run the database migrations:**

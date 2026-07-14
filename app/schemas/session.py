@@ -6,5 +6,5 @@ class SessionStartRequest(BaseModel):
 
 
 class SessionStartResponse(BaseModel):
-    thread_id: str
+    case_id: int
     process_type: str
