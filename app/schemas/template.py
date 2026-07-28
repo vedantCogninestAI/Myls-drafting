@@ -24,3 +24,7 @@ class TemplateItem(BaseModel):
 class TemplateListResponse(BaseModel):
     process_type: str
     templates: list[TemplateItem]
+
+
+class ProcessTypeListResponse(BaseModel):
+    process_types: list[str]

@@ -32,7 +32,7 @@ one known, deliberately unfixed edge case — see "Known follow-up" below.
   is **not** a context manager, don't wrap it in `async with` (it doesn't
   implement `__aenter__`/`__aexit__`).
 - `scrape_all_fees()` processes the ~132 forms in batches of
-  `FEE_SCRAPE_CONCURRENCY` (default 5), sleeping
+  `SCRAPE_CONCURRENCY` (default 5), sleeping
   `FEE_SCRAPE_BATCH_DELAY` seconds (default 5) between batches — this
   matters because Firecrawl's free tier rate-limits. Each batch's fee
   items are pushed to the DB immediately via an `on_batch` callback
@@ -50,9 +50,13 @@ one known, deliberately unfixed edge case — see "Known follow-up" below.
   same-key duplicates in some batches (e.g. the same form listed under
   multiple `topic_id`s in the dropdown).
 - Structured logs (`structlog`, JSON) are emitted at every stage —
-  `firecrawl_fetch`, `parse_form_list(_done)`, `parse_fee_page`,
-  `fee_batch_upserted`, `scrape_all_fees_done`, `run_fee_scrape_done` —
-  useful for watching a live scrape or debugging a specific form.
+  `scrape_all_fees_started` (includes the actual `concurrency`,
+  `batch_delay`, and `timeout` in effect, so a slow/rate-limited run can be
+  traced back to what was configured), `firecrawl_fetch`,
+  `parse_form_list(_done)`, `parse_fee_page`, `fee_batch_upserted`,
+  `scrape_all_fees_done`, `run_fee_scrape_done` — useful for watching a live
+  scrape or debugging a specific form. `scrape_all_addresses()` logs the
+  same `_started` shape (`scrape_all_addresses_started`).
 
 ### Parsing correctness — what's handled
 
@@ -126,7 +130,7 @@ during a real scrape, instead of being silently guessed at or lost.
 - Firecrawl cost: 132 forms scraped per `POST /fees/scrape` call. Worth
   checking usage against the free-tier/plan limits before this gets
   triggered often or automated — this is why batching + a delay between
-  batches (`FEE_SCRAPE_CONCURRENCY` / `FEE_SCRAPE_BATCH_DELAY`) exists.
+  batches (`SCRAPE_CONCURRENCY` / `FEE_SCRAPE_BATCH_DELAY`) exists.
 
 ### Operational note: re-scraping after a parser change
 
@@ -399,11 +403,11 @@ depth):
   logic changes, so old rows won't get overwritten, just left stale
   alongside new ones.
 - A full scrape run against all 102 forms takes roughly 2–3 minutes
-  (batches of `FEE_SCRAPE_CONCURRENCY`, `FEE_SCRAPE_BATCH_DELAY` between
+  (batches of `SCRAPE_CONCURRENCY`, `FEE_SCRAPE_BATCH_DELAY` between
   batches — same settings reused from the fee scraper, since both hit the
   same USCIS site, even though this feature isn't Firecrawl-rate-limited).
 - No new env vars needed — reuses `USCIS_BASE_URL`,
-  `FEE_SCRAPE_CONCURRENCY`, `FEE_SCRAPE_BATCH_DELAY`,
+  `SCRAPE_CONCURRENCY`, `FEE_SCRAPE_BATCH_DELAY`,
   `FEE_SCRAPE_TIMEOUT` from existing config. `requests` is an explicit
   dependency in `requirements.txt`.
 

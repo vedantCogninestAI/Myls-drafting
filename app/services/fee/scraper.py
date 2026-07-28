@@ -310,7 +310,14 @@ async def scrape_all_fees(
     client = new_client()
     listings = await fetch_form_list(client)
 
-    batch_size = settings.FEE_SCRAPE_CONCURRENCY
+    batch_size = settings.SCRAPE_CONCURRENCY
+    logger.info(
+        "scrape_all_fees_started",
+        listing_count=len(listings),
+        concurrency=batch_size,
+        batch_delay=settings.FEE_SCRAPE_BATCH_DELAY,
+        timeout=settings.FEE_SCRAPE_TIMEOUT,
+    )
     fee_items: list[dict] = []
     for i in range(0, len(listings), batch_size):
         batch = listings[i : i + batch_size]

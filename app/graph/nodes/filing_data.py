@@ -87,8 +87,7 @@ async def resolve_filing_data_node(state: DraftingState) -> dict:
         fee_repo = FeeRepository(session)
         address_repo = AddressRepository(session)
 
-        case = await ingestion_repo.get_case(case_id)
-        process_type = case.process_type if case else state.get("process_type")
+        process_type = state["process_type"]
 
         templates = await template_repo.get_by_process_type(process_type)
         if not templates:

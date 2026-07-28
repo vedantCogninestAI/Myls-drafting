@@ -3,10 +3,10 @@
 Each feature has its own file in `app/api/v1/endpoints/`. The full URL is built across three layers:
 
 ```
-POST "/{case_id}"     ← defined in endpoints/ingestion.py
+POST "/{case_name}"   ← defined in endpoints/ingestion.py
 + /ingest             ← prefix set in api/v1/router.py
 + /api/v1             ← prefix set in main.py
-= POST /api/v1/ingest/{case_id}
+= POST /api/v1/ingest/{case_name}
 ```
 
 ## Router, Prefix and Tags
@@ -53,17 +53,19 @@ router.include_router(yourfeature.router, prefix="/yourfeature", tags=["yourfeat
 | File | Prefix | URL | Purpose |
 |---|---|---|---|
 | `health.py` | `/health` | `GET /api/v1/health/` | Server health check |
-| `session.py` | `/session` | `POST /api/v1/session/start` | Create a new session, returns `case_id` |
-| `ingestion.py` | `/ingest` | `POST /api/v1/ingest/{case_id}` | Upload documents for a case, runs OCR + classification + field extraction |
-| `ingestion.py` | `/ingest` | `GET /api/v1/ingest/{case_id}` | Fetch a case's OCR'd files (text, doc type, error) merged with any extracted `form_fields` |
+| `session.py` | `/session` | `POST /api/v1/session/start` | Create a new case from a `case_name` (unique), returns `case_id` |
+| `session.py` | `/session` | `GET /api/v1/session/cases` | List every case as `{case_id, case_name, created_at}` — the enum a caller selects a case from |
+| `ingestion.py` | `/ingest` | `POST /api/v1/ingest/{case_name}` | Upload documents for a case (identified by name), runs OCR + classification + field extraction |
+| `ingestion.py` | `/ingest` | `GET /api/v1/ingest/{case_name}` | Fetch a case's OCR'd files (text, doc type, error) merged with any extracted `form_fields` |
 | `fee.py` | `/fees` | `POST /api/v1/fees/scrape` | Trigger a background scrape of USCIS form fees into `form_fees` (see `docs/scraping.md`) |
 | `fee.py` | `/fees` | `GET /api/v1/fees` | List scraped fee rows |
 | `address.py` | `/addresses` | `POST /api/v1/addresses/scrape` | Trigger a background scrape of USCIS filing addresses into `form_address` (see `docs/scraping.md`) |
 | `address.py` | `/addresses` | `GET /api/v1/addresses` | List scraped address rows |
-| `template_generation.py` | `/template-generation` | `POST /api/v1/template-generation/{process_type}` | Upload up to 5 sample Word (`.docx`) documents, extract structure (headings/lists/tables/alignment) + store as reference templates for that draft type (see `docs/templates.md`) |
+| `template_generation.py` | `/template-generation` | `POST /api/v1/template-generation/{process_type}` | Upload up to 5 sample Word (`.docx`) documents, extract structure (headings/lists/tables/alignment) + store as reference templates for that draft type — the sole origination point for a `process_type` (see `docs/templates.md`) |
 | `template_generation.py` | `/template-generation` | `GET /api/v1/template-generation/{process_type}` | List stored templates for a draft type |
-| `draft.py` | `/draft` | `POST /api/v1/draft/{case_id}/generate` | Start the draft agent for a case — first invocation of the graph for that case, returns the draft as a downloadable `.docx` file (see `docs/draft.md`) |
-| `draft.py` | `/draft` | `POST /api/v1/draft/{case_id}/approve` | Submit human review — `approved: false` loops back for a revision, `approved: true` finalizes (repeatable) — returns the current draft as a downloadable `.docx` file |
+| `template_generation.py` | `/template-generation` | `GET /api/v1/template-generation/process-types` | List every distinct `process_type` that has templates — the enum a caller selects a draft type from |
+| `draft.py` | `/draft` | `POST /api/v1/draft/{case_name}/{process_type}/generate` | Start the draft agent for a case (by name) against a chosen draft type — first invocation of the graph for that `(case, process_type)` pair, returns the draft as a downloadable `.docx` file (see `docs/draft.md`) |
+| `draft.py` | `/draft` | `POST /api/v1/draft/{case_name}/{process_type}/approve` | Submit human review — `approved: false` loops back for a revision, `approved: true` finalizes (repeatable) — returns the current draft as a downloadable `.docx` file |
 
 **Note:** every endpoint above calls `services/`+`repositories/` directly
 **except** `draft.py`, which is the one live example of

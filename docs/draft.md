@@ -6,18 +6,24 @@ Two separate LLM agents cooperate here, each its own graph node: `resolve_filing
 
 ## What This Generates
 
-A case type defines *what kind* of draft this agent produces (e.g. "N-400 Cover Letter") — its templates are structure only, never a real client's content. Each run of this agent is for one specific case (one client) — same structure, built entirely from that client's own Form Data and exhibits. The case type doesn't change per case; only the client-specific inputs do.
+`process_type` defines *what kind* of draft this agent produces (e.g. "N-400 Cover Letter") — its templates (`docs/templates.md`) are structure only, never a real client's content. A case (`docs/database.md`) carries no `process_type` of its own; it's just a client's ingested data. Both are supplied independently at generate time — `POST /draft/{case_name}/{process_type}/generate` — so the same case's data can be drafted against any `process_type`, and the same `process_type` can be applied to any case. Each run is for one specific `(case, process_type)` pair — the draft is built entirely from that client's own Form Data and exhibits, structured per that `process_type`'s templates.
 
 ## Flow
 
 ```
-POST /api/v1/draft/{case_id}/generate       (always a fresh first pass — see
-                                             "Fresh-Start Guarantee" below)
+POST /api/v1/draft/{case_name}/{process_type}/generate
+        ↓                        (always a fresh first pass — see
+        ↓                         "Fresh-Start Guarantee" below)
+endpoint resolves case_name → the case row (IngestionRepository.
+get_case_by_name()) — 404 if no case has that name — then uses its
+numeric id for everything below
         ↓
 resolve_filing_data_node (LangGraph node) — runs on EVERY pass: fresh
 generation AND every revision, never skipped, never gated by feedback
         ↓
-fetches: case's process_type, templates (by process_type), case's form_data
+reads process_type straight from state (supplied by the endpoint, not
+looked up from the case); fetches templates (by process_type), case's
+form_data
         ↓
 if templates exist, calls resolve_filing_data() (service) — a tool-calling
 agent loop with only two tools available:
@@ -60,7 +66,8 @@ and returned to caller as a downloadable file, not JSON
         ↓
 User reviews the draft
         ↓
-POST /api/v1/draft/{case_id}/approve        (repeatable)
+POST /api/v1/draft/{case_name}/{process_type}/approve        (repeatable —
+same case_name + process_type as the /generate call, resolved the same way)
 → {"approved": false, "feedback": "..."}
     → resumes past interrupt(), routes back to resolve_filing_data_node
       (not straight to generate_draft_node — filing data is re-resolved
@@ -88,12 +95,15 @@ Fee/address resolution and document drafting are two separate LLM agents, not on
 
 ## Fresh-Start Guarantee (`/generate`)
 
-`/generate` and `/approve` share the same LangGraph `thread_id` (`str(case_id)`), but only `/approve` is meant to carry state forward — it resumes a paused `interrupt()` with the human's decision via `Command(resume=...)`. `/generate` is meant to always be a clean first pass, so `generate_draft_endpoint` (`app/api/v1/endpoints/draft.py`) explicitly resets `draft`, `draft_feedback`, `draft_approved`, and `draft_revision_count` to their initial values in the `graph.ainvoke()` input on every call:
+`/generate` and `/approve` share the same LangGraph `thread_id` — `f"{case_id}:{process_type}"`, built from the case's resolved numeric id (not `case_name`, so the thread stays stable even though the name is what the API surface uses) and the `process_type` from the URL. This means a given `(case, process_type)` pair gets its own independent HITL thread — running a different `process_type` against the same case, or the same `process_type` against a different case, never collides with an in-progress revision loop.
+
+Only `/approve` is meant to carry state forward — it resumes a paused `interrupt()` with the human's decision via `Command(resume=...)`. `/generate` is meant to always be a clean first pass, so `generate_draft_endpoint` (`app/api/v1/endpoints/draft.py`) explicitly resets `draft`, `draft_feedback`, `draft_approved`, and `draft_revision_count` to their initial values in the `graph.ainvoke()` input on every call:
 
 ```python
 result = await graph.ainvoke(
     {
         "case_id": case_id,
+        "process_type": process_type,
         "draft": None,
         "draft_feedback": None,
         "draft_approved": False,
@@ -103,7 +113,7 @@ result = await graph.ainvoke(
 )
 ```
 
-`DraftingState` is a plain `TypedDict` with no custom reducers, so each key is "last value wins" — these values overwrite whatever was checkpointed from any prior round on that case before any node runs.
+`DraftingState` is a plain `TypedDict` with no custom reducers, so each key is "last value wins" — these values overwrite whatever was checkpointed from any prior round on that `(case, process_type)` thread before any node runs.
 
 ## Internal Agent Design
 
@@ -133,7 +143,7 @@ This is the only path to a filing fee or filing address — the drafting agent's
 
 A template's structure includes how many named parties it shows (e.g. a caption block written for one respondent). The prompt instructs the model that Form Data may describe more parties than any template shows — several respondents, each with their own filed form of the same type — and in that case to adapt the structure to name every one of them (extending the caption block, switching to plural phrasing) rather than gapping a party's identity or dropping any of them.
 
-Templates that use a repeating bracket character (`)` or `:`) down a caption block's margin, including lines that are nothing but that character, are a tab-stop-based visual convention — the prompt instructs the model to never reproduce a line consisting solely of a bracket character, attaching it to the nearest real content line instead. This doesn't restore exact column alignment (see the tab-stop limitation noted under "Word Document Export"); it only avoids an isolated floating character.
+Templates that use a repeating bracket character (`)` or `:`) down a caption block's margin, including lines that are nothing but that character, are a tab-stop-based visual convention — the prompt instructs the model to never reproduce a line consisting solely of a bracket character, attaching it to the nearest real content line instead. This doesn't restore exact column alignment (see the tab-stop limitation noted under "Word Document Export"); it only avoids an isolated floating character. The rule also covers lines the model inserts itself between stacked items (e.g. one line per party) — see "Word Document Export" below for the code-level backstop added after prompt-only enforcement of that case proved unreliable in testing.
 
 If a case has no exhibits, the "Available Files" section of the prompt's input renders as `(none — this case has no exhibits)` rather than an empty section (`app/services/draft/pipeline.py`'s `_build_initial_message`), and the prompt states explicitly that this is normal, complete input — never a reason to ask a question or stop.
 
@@ -143,14 +153,14 @@ If a case has no exhibits, the "Available Files" section of the prompt's input r
 
 ## Word Document Export
 
-`app/services/draft/word_formatter.py`'s `draft_to_docx_bytes()` turns the agent's labeled plain-text draft into real `.docx` bytes: splits the text into blank-line-separated blocks, then for each block —
+`app/services/draft/word_formatter.py`'s `draft_to_docx_bytes()` turns the agent's labeled plain-text draft into real `.docx` bytes: sets 0.75" left/right margins (narrower than `python-docx`'s unadjusted 1" default, giving long caption/label lines more room before wrapping), splits the text into blank-line-separated blocks, drops any block that's just a caption-margin bracket character (`:` or `)`) sitting between two multi-field rows (`_drop_redundant_bracket_separators()` — a duplicated separator the model sometimes still inserts between stacked items like multiple parties, despite the prompt rule against it), then for each remaining block —
 
 - if it matches markdown table syntax (pipe-delimited rows plus a `| --- | --- |`-style separator row, detected by `_parse_markdown_table()`), builds a real `python-docx` `Table` (style `"Table Grid"`) with one row/cell per parsed row/cell, instead of writing the raw markdown characters as text. This is a plain structural pattern match — no hardcoded column names or section titles — so it applies to any table-shaped block the model produces, matching the same markdown syntax `_table_to_markdown()` (`app/services/template_generation/pipeline.py`) produces when a template's own source `.docx` contains a real table.
 - otherwise, strips a leading `[CENTER]`/`[RIGHT]`/`[JUSTIFY]` label if present and adds it as a normal paragraph with that alignment (default left-aligned if no label).
 
 Returns the saved document as bytes from an in-memory buffer — no disk I/O, no DB.
 
-**Not handled:** tab-stop-based columnar layouts (e.g. a caption block's bracket characters aligned down the right margin via a custom Word tab stop, or a judge/hearing pair laid out side by side with tabs). `paragraph.text` extraction captures the literal tab characters but not the paragraph's tab-stop position, and `add_paragraph()` here creates paragraphs with Word's default tab stops, not the original template's — so these render at different horizontal positions than the source template intended. `DRAFT_GENERATION_PROMPT` has a rule against reproducing a caption-block line that consists solely of a bracket character with no other content (so no isolated floating punctuation), but the deeper column-alignment problem itself is not fixed at the code level.
+**Not handled:** tab-stop-based columnar layouts (e.g. a caption block's bracket characters aligned down the right margin via a custom Word tab stop, or a judge/hearing pair laid out side by side with tabs). `paragraph.text` extraction captures the literal tab characters but not the paragraph's tab-stop position, and `add_paragraph()` here creates paragraphs with Word's default tab stops, not the original template's — so these render at different horizontal positions than the source template intended. `DRAFT_GENERATION_PROMPT` has a rule against reproducing a caption-block line that consists solely of a bracket character with no other content (so no isolated floating punctuation), and against inserting one as a separator between stacked items it writes itself (e.g. multiple parties) — but that prompt rule alone proved unreliable for the stacked-item case in testing, so `_drop_redundant_bracket_separators()` now removes a bracket-only block sitting between two multi-field rows as a code-level backstop. The deeper column-alignment problem — actually lining values up in columns, not just removing a duplicated separator — is still not fixed at the code level.
 
 Both `/generate` and `/approve` call this after getting `draft` from the graph and return it as the HTTP response body directly — `media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"`, `Content-Disposition: attachment; filename="draft_{case_id}.docx"`, so the client downloads a real file, not JSON. Since the body is binary, response metadata travels as headers instead: `X-Case-Id` (both endpoints), plus `X-Approved` and `X-Max-Revisions-Reached` (`/approve` only). `feedback` is deliberately **not** echoed back in a header — it's free text the client already has (they sent it in the request), and HTTP headers must be ASCII/latin-1-safe, which arbitrary human-typed text isn't guaranteed to be.
 
@@ -173,7 +183,7 @@ On a revision round, `generate_draft_node` passes the previous `draft` and the a
 
 | Data | Lookup key | Method |
 |---|---|---|
-| Case's `process_type` | `case_id` | `IngestionRepository.get_case()` |
+| Case row (name → id resolution) | `case_name` | `IngestionRepository.get_case_by_name()` — done once, in the endpoint, before the graph runs |
 | Templates | `process_type` | `TemplateRepository.get_by_process_type()` — **no `is_active` filter** (see gap below) |
 | Form data (JSON) | `case_id` | `IngestionRepository.get_case_form_fields()`, grouped by source filename |
 | Exhibit list | `case_id` | `IngestionRepository.get_case_files()`, filtered to `doc_type == "exhibit"` |
@@ -181,7 +191,7 @@ On a revision round, `generate_draft_node` passes the previous `draft` and the a
 | Filing fee rows (tool) | `form_number` (fuzzy) | `FeeRepository.get_by_form_number()` |
 | Filing address rows (tool) | `form_number` (fuzzy) | `AddressRepository.get_by_form_number()` |
 
-`case_id` is always the anchor — it resolves to `process_type`, which then drives templates. Fee/address lookups are keyed by `form_number` instead, since fee/address data is scraped per-form, not per-`process_type` (a packet can include multiple forms). `resolve_filing_data_node` fetches templates/form_data independently of `generate_draft_node` (a second, separate DB round-trip each pass) since it's a separate graph node with its own `AsyncSessionLocal()` block.
+`case_name` is resolved to the case's numeric `id` once, at the top of the endpoint, before the graph is ever invoked — every node downstream works with that `id` from `DraftingState`, never the name. `process_type` is a second, independent input carried in `DraftingState` from the same endpoint call — it drives templates directly, with no lookup through the case at all. Fee/address lookups are keyed by `form_number` instead, since fee/address data is scraped per-form, not per-`process_type` (a packet can include multiple forms). `resolve_filing_data_node` fetches templates/form_data independently of `generate_draft_node` (a second, separate DB round-trip each pass) since it's a separate graph node with its own `AsyncSessionLocal()` block.
 
 ## Known Gaps
 
@@ -189,7 +199,7 @@ On a revision round, `generate_draft_node` passes the previous `draft` and the a
 - **`resolve_filing_data_node` adds a full extra LLM call to every generation and every revision**, even for a `process_type` whose templates never mention a fee or address (it does skip the call entirely if there are zero templates, but not based on template *content*). Cost/latency tradeoff accepted deliberately — see "Two-Agent Split" above for why unconditional re-resolution matters more than the saved cost.
 - **`templates.is_active` still never gets set** (same gap documented in `docs/templates.md`/`docs/database.md`) — since there's no activate endpoint, both agents fetch *every* template row for a `process_type`, not a curated "2 active" subset.
 - **No `drafts` table.** The generated draft only exists inside the LangGraph checkpoint (Postgres-backed, survives restarts, but not queryable). There's no way to fetch a case's current/past drafts outside of the `/generate` or `/approve` response itself — no `GET` endpoint, no relational row. Deliberately deferred until after seeing real agent output; not yet revisited.
-- **`process_type` free-text matching risk** (same as templates/fees) — both agents' template lookups depend on the case's `process_type` string matching a template's `process_type` string exactly.
+- **`/generate` doesn't validate that `process_type` actually has templates.** `GET /api/v1/template-generation/process-types` (`docs/templates.md`) is the intended way a caller picks a valid `process_type`, but nothing on `/draft/{case_name}/{process_type}/generate` enforces that the value passed actually matches one — a typo'd or nonexistent `process_type` just degrades gracefully (zero templates found, `resolve_filing_data_no_templates` / `draft_context_no_templates` logged, draft generated with no structural reference and heavy `[GAP: ...]` markers) rather than being rejected outright.
 - **Revision loop is otherwise unbounded in cost** if someone scripts repeated rejections — `MAX_DRAFT_REVISIONS` caps *rounds*, but each round is now two real, billed LLM calls (filing-data resolution + drafting) instead of one.
 - **No code-level check on the drafting agent's final answer.** The model can still return a clarifying question, a reasoning preamble, or any other non-document text as its "final answer" — `generate_draft()` only checks that it's non-empty. Everything preventing this is prompt-only (see `# Output` in `DRAFT_GENERATION_PROMPT`).
 - **`get_file_by_filename` (`app/repositories/ingestion.py`) has no `ORDER BY` and no unique constraint on `(case_id, filename)`.** If two `ingestion_files` rows share a filename for the same case (e.g. a corrected re-upload), `get_exhibit_text` can return either one nondeterministically.
@@ -199,20 +209,21 @@ On a revision round, `generate_draft_node` passes the previous `draft` and the a
 
 | Method | Path | Body | Response |
 |---|---|---|---|
-| `POST` | `/api/v1/draft/{case_id}/generate` | none | `.docx` file (binary body), header `X-Case-Id` |
-| `POST` | `/api/v1/draft/{case_id}/approve` | `{approved, feedback?}` (`feedback` required, non-blank, when `approved: false` — `422` otherwise) | `.docx` file (binary body), headers `X-Case-Id`, `X-Approved`, `X-Max-Revisions-Reached`; `409` if no draft is currently pending review for this case |
+| `POST` | `/api/v1/draft/{case_name}/{process_type}/generate` | none | `.docx` file (binary body), header `X-Case-Id`; `404` if `case_name` doesn't match any case |
+| `POST` | `/api/v1/draft/{case_name}/{process_type}/approve` | `{approved, feedback?}` (`feedback` required, non-blank, when `approved: false` — `422` otherwise) | `.docx` file (binary body), headers `X-Case-Id`, `X-Approved`, `X-Max-Revisions-Reached`; `404` if `case_name` doesn't match any case, `409` if no draft is currently pending review for this `(case, process_type)` |
 
-Both responses: `media_type` `application/vnd.openxmlformats-officedocument.wordprocessingml.document`, `Content-Disposition: attachment; filename="draft_{case_id}.docx"`.
+Both responses: `media_type` `application/vnd.openxmlformats-officedocument.wordprocessingml.document`, `Content-Disposition: attachment; filename="draft_{case_id}.docx"` — the filename still uses the resolved numeric `case_id`, not `case_name`. The `X-Case-Id` header is likewise always the numeric id, for backend traceability even though the request itself was addressed by name.
 
 ## Key Files
 
 | File | Role |
 |---|---|
-| `app/api/v1/endpoints/draft.py` | `POST /generate` (`graph.ainvoke()`), `POST /approve` (`graph.ainvoke(Command(resume=...))`) — both convert the draft to `.docx` and return it as the response |
-| `app/graph/nodes/filing_data.py` | `resolve_filing_data_node` — fetches templates/form_data, wires `FeeRepository`/`AddressRepository`, formats their rows into tool-result text (`_format_fee_result`/`_format_address_result`) |
+| `app/api/v1/endpoints/draft.py` | `POST /{case_name}/{process_type}/generate` (resolves `case_name` via `IngestionRepository`, then `graph.ainvoke()`), `POST /{case_name}/{process_type}/approve` (same resolution, then `graph.ainvoke(Command(resume=...))`) — both convert the draft to `.docx` and return it as the response |
+| `app/repositories/ingestion.py` | `get_case_by_name()` — resolves the endpoint's `case_name` path param to the case row, used by both draft endpoints before touching the graph |
+| `app/graph/nodes/filing_data.py` | `resolve_filing_data_node` — reads `process_type` straight from state, fetches templates/form_data, wires `FeeRepository`/`AddressRepository`, formats their rows into tool-result text (`_format_fee_result`/`_format_address_result`) |
 | `app/graph/nodes/draft.py` | `generate_draft_node`, `draft_review_node`, `route_after_review` |
 | `app/graph/main_graph.py` | Wires all three nodes: `resolve_filing_data → generate_draft → draft_review`, with the review→regenerate edge routing back to `resolve_filing_data` |
-| `app/graph/state.py` | `DraftingState` — `process_type`, `case_id`, `draft`, `draft_revision_count`, `draft_feedback`, `draft_approved`, `filing_fee_data`, `filing_address_data` |
+| `app/graph/state.py` | `DraftingState` — `process_type`, `case_id`, `draft`, `draft_revision_count`, `draft_feedback`, `draft_approved`, `filing_fee_data`, `filing_address_data`; both `process_type` and `case_id` are set once at `/generate` from the endpoint's resolved inputs and never derived from a DB row mid-graph |
 | `app/services/draft/filing_data.py` | `resolve_filing_data()` — the filing-data agent's tool-calling loop, `GET_FILING_FEE_TOOL` / `GET_FILING_ADDRESS_TOOL` specs, `FilingLookupResult`, `FilingData` |
 | `app/services/draft/pipeline.py` | `generate_draft()` — the drafting agent's tool-calling loop, `GET_EXHIBIT_TEXT_TOOL` spec |
 | `app/services/draft/word_formatter.py` | `draft_to_docx_bytes()` — converts the labeled plain-text draft into `.docx` bytes, see "Word Document Export" above |
@@ -229,9 +240,9 @@ Every event below carries `case_id` — including the service-layer ones inside 
 
 | Event | Emitted from | When |
 |---|---|---|
-| `draft_generate_request_received` / `_done` | `draft.py` (endpoint) | before/after `/generate` |
-| `draft_approve_request_received` / `_done` | `draft.py` (endpoint) | before/after `/approve`, `_done` includes `max_revisions_reached` |
-| `draft_approve_no_pending_review` | `draft.py` (endpoint) | warning — `/approve` called with nothing paused for this case; returns `409` |
+| `draft_generate_request_received` / `_done` | `draft.py` (endpoint) | before/after `/generate`, once `case_name` has resolved to `case_id`; `_received` also includes `case_name` |
+| `draft_approve_request_received` / `_done` | `draft.py` (endpoint) | before/after `/approve`, once `case_name` has resolved to `case_id`; `_done` includes `max_revisions` (the configured cap) alongside `max_revisions_reached` (whether it was hit) |
+| `draft_approve_no_pending_review` | `draft.py` (endpoint) | warning — `/approve` called with nothing paused for this `(case, process_type)`; returns `409` |
 | `resolve_filing_data_node_started` / `_done` | `graph/nodes/filing_data.py` | node entry/exit, `_done` includes whether fee/address were found |
 | `resolve_filing_data_no_templates` | `graph/nodes/filing_data.py` | zero templates matched — skips the LLM call entirely, both fields resolve to `None` |
 | `filing_data_fee_fetch_done` / `_not_found` | `graph/nodes/filing_data.py` | per `get_filing_fee` call — `query`, `matched_form_number`, `score`, `row_count` |
@@ -245,7 +256,7 @@ Every event below carries `case_id` — including the service-layer ones inside 
 | `draft_context_no_templates` | `graph/nodes/draft.py` | warning if zero templates matched the `process_type` |
 | `draft_exhibit_fetch_done` / `_not_found` | `graph/nodes/draft.py` | per `get_exhibit_text` call, whether the DB lookup succeeded |
 | `draft_review_resumed` | `graph/nodes/draft.py` | after `interrupt()` resumes with the human's decision |
-| `draft_revision_cap_reached` | `graph/nodes/draft.py` | warning, if `MAX_DRAFT_REVISIONS` hit without approval |
+| `draft_revision_cap_reached` | `graph/nodes/draft.py` | warning, if `MAX_DRAFT_REVISIONS` hit without approval; includes `max_revisions` (the configured cap) alongside `revision_count` |
 | `draft_generation_started` / `_done` | `services/draft/pipeline.py` | start/end of the drafting agent loop, `_done` includes `draft_length` |
 | `draft_generation_tool_call` | `services/draft/pipeline.py` | per `get_exhibit_text` call, includes `filename` and the model's stated `reason` |
 | `draft_generation_empty_response` | `services/draft/pipeline.py` | warning, if the model's final answer was empty |

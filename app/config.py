@@ -31,10 +31,10 @@ class Settings(BaseSettings):
     # Draft generation
     MAX_DRAFT_REVISIONS: int = 5
 
-    # USCIS fee scraping
+    # USCIS fee/address scraping (shared by both)
     USCIS_FEE_CALCULATOR_URL: str = "https://www.uscis.gov/feecalculator"
     USCIS_BASE_URL: str = "https://www.uscis.gov"
-    FEE_SCRAPE_CONCURRENCY: int = 5
+    SCRAPE_CONCURRENCY: int = 5
     FEE_SCRAPE_TIMEOUT: int = 30
     FEE_SCRAPE_BATCH_DELAY: int = 5
     FIRECRAWL_API_KEY: str = ""

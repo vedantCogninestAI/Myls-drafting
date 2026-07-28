@@ -1,5 +1,5 @@
 import structlog
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
@@ -12,7 +12,7 @@ router = APIRouter()
 
 
 @router.post(
-    "/{case_id}",
+    "/{case_name}",
     response_model=IngestResponse,
     openapi_extra={
         # Swagger UI's file-picker widget only reliably detects the OpenAPI
@@ -39,12 +39,20 @@ router = APIRouter()
     },
 )
 async def ingest_documents(
-    case_id: int,
+    case_name: str,
     files: list[UploadFile] = File(...),
     session: AsyncSession = Depends(get_db),
 ) -> IngestResponse:
+    repository = IngestionRepository(session)
+    case = await repository.get_case_by_name(case_name)
+    if case is None:
+        raise HTTPException(status_code=404, detail=f"No case named '{case_name}' found.")
+    case_id = case.id
+
     file_data = {f.filename: await f.read() for f in files}
-    logger.info("ingest_request_received", case_id=case_id, filenames=list(file_data.keys()))
+    logger.info(
+        "ingest_request_received", case_id=case_id, case_name=case_name, filenames=list(file_data.keys())
+    )
 
     results, failed = await run_ingestion_pipeline(file_data)
 
@@ -59,7 +67,6 @@ async def ingest_documents(
         else:
             unclassified_texts[filename] = doc["text"]
 
-    repository = IngestionRepository(session)
     files_to_save = [
         {"filename": filename, "doc_type": doc["type"], "ocr_text": doc["text"], "error": None}
         for filename, doc in results.items()
@@ -102,18 +109,22 @@ async def ingest_documents(
     return IngestResponse(results=all_results, failed=failed)
 
 
-@router.get("/{case_id}", response_model=CaseIngestionResponse)
+@router.get("/{case_name}", response_model=CaseIngestionResponse)
 async def get_case_ingestion(
-    case_id: int,
+    case_name: str,
     session: AsyncSession = Depends(get_db),
 ) -> CaseIngestionResponse:
     repository = IngestionRepository(session)
-    files = await repository.get_case_files(case_id)
-    form_fields = await repository.get_case_form_fields(case_id)
+    case = await repository.get_case_by_name(case_name)
+    if case is None:
+        raise HTTPException(status_code=404, detail=f"No case named '{case_name}' found.")
+
+    files = await repository.get_case_files(case.id)
+    form_fields = await repository.get_case_form_fields(case.id)
     fields_by_file_id = {ff.ingestion_file_id: ff.fields for ff in form_fields}
 
     return CaseIngestionResponse(
-        case_id=case_id,
+        case_id=case.id,
         files=[
             IngestedFile(
                 id=f.id,

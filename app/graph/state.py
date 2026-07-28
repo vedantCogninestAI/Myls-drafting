@@ -2,9 +2,11 @@ from typing_extensions import TypedDict
 
 
 class DraftingState(TypedDict, total=False):
-    # set at first invocation (POST /draft/{case_id}/generate)
+    # set at first invocation (POST /draft/{case_id}/{process_type}/generate)
+    # — a case's ingested data can be drafted against any process_type, so
+    # both are required inputs; thread_id is f"{case_id}:{process_type}"
     process_type: str
-    case_id: int                         # cases.id — thread_id is str(case_id)
+    case_id: int                         # cases.id
 
     # populated by generate_draft node — the draft IS the whole document,
     # cover letter included; not a separate field/phase. Any unresolved

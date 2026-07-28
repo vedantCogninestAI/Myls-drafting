@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_db
 from app.repositories.template import TemplateRepository
 from app.schemas.template import (
+    ProcessTypeListResponse,
     TemplateItem,
     TemplateListResponse,
     TemplateResult,
@@ -83,6 +84,14 @@ async def upload_templates(
         uploaded=[TemplateResult(id=t.id, filename=t.filename) for t in saved],
         failed=failed,
     )
+
+
+@router.get("/process-types", response_model=ProcessTypeListResponse)
+async def list_process_types(
+    session: AsyncSession = Depends(get_db),
+) -> ProcessTypeListResponse:
+    process_types = await TemplateRepository(session).get_distinct_process_types()
+    return ProcessTypeListResponse(process_types=process_types)
 
 
 @router.get("/{process_type}", response_model=TemplateListResponse)

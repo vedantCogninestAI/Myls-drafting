@@ -2,6 +2,7 @@ import asyncio
 import sys
 from contextlib import asynccontextmanager
 
+import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -18,10 +19,27 @@ from app.middleware.request_logging import RequestLoggingMiddleware
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
+logger = structlog.get_logger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
+    logger.info(
+        "config_loaded",
+        debug=settings.DEBUG,
+        ingestion_concurrency=settings.INGESTION_CONCURRENCY,
+        classify_pdf_llm=settings.CLASSIFY_PDF_LLM,
+        template_concurrency=settings.TEMPLATE_CONCURRENCY,
+        max_draft_revisions=settings.MAX_DRAFT_REVISIONS,
+        scrape_concurrency=settings.SCRAPE_CONCURRENCY,
+        fee_scrape_batch_delay=settings.FEE_SCRAPE_BATCH_DELAY,
+        fee_scrape_timeout=settings.FEE_SCRAPE_TIMEOUT,
+        llm_max_retries=settings.LLM_MAX_RETRIES,
+        bedrock_model_id=settings.BEDROCK_MODEL_ID,
+        aws_region=settings.AWS_REGION,
+        log_level=settings.LOG_LEVEL,
+    )
     # autocommit is required: the checkpointer's setup migrations include
     # `CREATE INDEX CONCURRENTLY`, which cannot run inside a transaction.
     async with AsyncConnectionPool(

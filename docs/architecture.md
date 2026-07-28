@@ -36,13 +36,13 @@ Using the AI agent, generate the draft of the document
 | Step | Status |
 |---|---|
 | Store files in S3 | ❌ Not built — no bucket configured yet |
-| Generate OCR of all documents (classify doc/proof) | ✅ `POST /api/v1/ingest/{case_id}` → `app/services/ingestion/pipeline.py`. See `docs/ingestion.md` |
+| Generate OCR of all documents (classify doc/proof) | ✅ `POST /api/v1/ingest/{case_name}` → `app/services/ingestion/pipeline.py`. See `docs/ingestion.md` |
 | Store extracted OCR/classification in DB | ✅ `ingestion_files` table, one row per file. See `docs/database.md` |
 | Extract the JSON (all fields) of forms | ✅ `extract_form_fields()` (`app/services/ingestion/pipeline.py`), runs only on `filed_doc` files, writes to `form_fields` |
 | Fees & address data (scraped) | ✅ `form_fees`, `form_address` tables. See `docs/scraping.md` |
-| Templates in DB | ✅ `templates` table, upload + fetch at `/api/v1/template-generation/{process_type}`. See `docs/templates.md` |
-| AI agent generates the draft | ✅ Two agents, two graph nodes: `resolve_filing_data_node` (fetches fee/address, `app/graph/nodes/filing_data.py`) runs first, then `generate_draft_node` (`app/graph/nodes/draft.py`) writes the document using whatever it resolved. Fees/address now wired in — see `docs/draft.md`'s "Two-Agent Split" |
-| Show for Review (HITL) / finalize | ✅ `draft_review_node` + `interrupt()`, multi-round revision loop via `POST /api/v1/draft/{case_id}/approve`. See `docs/draft.md` |
+| Templates in DB | ✅ `templates` table, upload + fetch at `/api/v1/template-generation/{process_type}` — also the sole origination point for a `process_type`, since cases don't carry one. See `docs/templates.md` |
+| AI agent generates the draft | ✅ Two agents, two graph nodes: `resolve_filing_data_node` (fetches fee/address, `app/graph/nodes/filing_data.py`) runs first, then `generate_draft_node` (`app/graph/nodes/draft.py`) writes the document using whatever it resolved. `case_name` and `process_type` are both supplied independently at `/draft/{case_name}/{process_type}/generate` — see `docs/draft.md`'s "Two-Agent Split" |
+| Show for Review (HITL) / finalize | ✅ `draft_review_node` + `interrupt()`, multi-round revision loop via `POST /api/v1/draft/{case_name}/{process_type}/approve`. See `docs/draft.md` |
 
 ---
 
@@ -95,36 +95,56 @@ is invoked (`await graph.ainvoke(...)`) per API call that needs it: each
 invocation loads that `thread_id`'s state from Postgres, merges in new input,
 runs whatever node comes next, and saves the updated state back.
 
-`thread_id` is never API-facing. Endpoints take `case_id` and derive
-`thread_id = str(case_id)` at the `graph.ainvoke()` call site.
+`thread_id` is never API-facing. The draft endpoints take `case_name` +
+`process_type`, resolve `case_name` to the case's numeric `id` (via
+`IngestionRepository.get_case_by_name()`), and derive
+`thread_id = f"{case_id}:{process_type}"` at the `graph.ainvoke()` call site —
+keyed on the numeric id (stable) and the `process_type` string, not on
+`case_name` directly, so a given `(case, process_type)` pair always gets the
+same HITL thread regardless of how many other draft types that case has been
+run against.
 
 ```
-User selects process
+Admin defines a draft type
+        ↓
+POST /api/v1/template-generation/{process_type}   (upload sample .docx files)
+→ the first upload for a given `process_type` string is what brings that
+  category into existence — plain DB write, no graph
+→ GET /api/v1/template-generation/process-types lists every process_type
+  that exists, for a caller to select from
+
+User creates a case
         ↓
 POST /api/v1/session/start
-→ creates a `cases` row (process_type) — plain DB write, no graph
-→ case.id returned to the UI as `case_id`
+→ creates a `cases` row from a `case_name` (unique) — plain DB write, no graph
+→ case.id returned to the UI as `case_id`, alongside `case_name`
+→ GET /api/v1/session/cases lists every case, for a caller to select from
 
 User uploads documents
         ↓
-POST /api/v1/ingest/{case_id}
-→ plain endpoint: calls run_ingestion_pipeline() directly — OCR + classification
-  run in parallel per document (classification only if CLASSIFY_PDF_LLM=true)
-→ writes one `ingestion_files` row per document via IngestionRepository
+POST /api/v1/ingest/{case_name}
+→ plain endpoint: resolves `case_name` to the case row (404 if not found),
+  then calls run_ingestion_pipeline() directly — OCR + classification run in
+  parallel per document (classification only if CLASSIFY_PDF_LLM=true)
+→ writes one `ingestion_files` row per document via IngestionRepository,
+  keyed by the resolved numeric `case_id`
 → response built directly from pipeline results
 
-POST /api/v1/draft/{case_id}/generate
+POST /api/v1/draft/{case_name}/{process_type}/generate
+→ resolves `case_name` to the case row (404 if not found)
 → always invoked as a fresh first pass: seeds state with `{"case_id": ...,
-  "draft": None, "draft_feedback": None, "draft_approved": False,
-  "draft_revision_count": 0}`, overwriting whatever was checkpointed from any
-  prior round on this thread — only `/approve` is meant to carry `draft`/
-  `draft_feedback` forward, via `Command(resume=...)` against a paused
-  `interrupt()`
-→ resolve_filing_data_node runs first: resolves `process_type` from `cases`,
-  fetches templates + form fields, and — if a template shows a fee and/or
-  address slot — fetches the real value via get_filing_fee/get_filing_address
-  tool calls (see docs/draft.md). Writes filing_fee_data/filing_address_data
-  onto DraftingState (None for whichever slot wasn't found).
+  "process_type": ..., "draft": None, "draft_feedback": None,
+  "draft_approved": False, "draft_revision_count": 0}`, overwriting whatever
+  was checkpointed from any prior round on this `(case, process_type)` thread
+  — only `/approve` is meant to carry `draft`/`draft_feedback` forward, via
+  `Command(resume=...)` against a paused `interrupt()`
+→ resolve_filing_data_node runs first: reads `process_type` straight from
+  state (not looked up from the case — a case carries no `process_type` of
+  its own), fetches templates + form fields, and — if a template shows a fee
+  and/or address slot — fetches the real value via
+  get_filing_fee/get_filing_address tool calls (see docs/draft.md). Writes
+  filing_fee_data/filing_address_data onto DraftingState (None for whichever
+  slot wasn't found).
 → generate_draft_node runs next: fetches exhibits + form fields + template
   from the DB again (its own DB round-trip — the two nodes don't share a
   session), reads filing_fee_data/filing_address_data from state, generates
@@ -134,7 +154,8 @@ POST /api/v1/draft/{case_id}/generate
 
 User reviews the draft
         ↓
-POST /api/v1/draft/{case_id}/approve   (repeatable — a loop, not a single call)
+POST /api/v1/draft/{case_name}/{process_type}/approve   (repeatable — a loop,
+not a single call; same case_name + process_type as the /generate call)
 → {"approved": false, "feedback": "..."} → resumes, routes back to
   resolve_filing_data_node (re-resolving filing data unconditionally, not
   gated by what the feedback says — see docs/draft.md), which then hands off
@@ -148,8 +169,9 @@ POST /api/v1/draft/{case_id}/approve   (repeatable — a loop, not a single call
 
 ## State
 
-One state object per session, keyed internally by `thread_id` (always
-`str(case_id)`). LangGraph loads it before each node runs and saves it after.
+One state object per `(case, process_type)` pair, keyed internally by
+`thread_id` (`f"{case_id}:{process_type}"`). LangGraph loads it before each
+node runs and saves it after.
 
 It is deliberately minimal: identity, plus the draft generation's own output. It
 does **not** hold ingestion data — exhibits and form fields live in
@@ -159,8 +181,11 @@ draft text (`[GAP: ...]`), not tracked as structured state.
 
 ```python
 class DraftingState(TypedDict, total=False):
-    process_type: str                    # see note below
-    case_id: int                         # cases.id — thread_id is str(case_id)
+    process_type: str                    # set at /generate from the URL path,
+                                          # not derived from the case
+    case_id: int                         # cases.id, resolved from case_name
+                                          # by the endpoint before the graph runs
+                                          # — thread_id is f"{case_id}:{process_type}"
 
     # populated by generate_draft node — the draft IS the whole document,
     # cover letter included
@@ -178,12 +203,11 @@ class DraftingState(TypedDict, total=False):
     draft_approved: bool
 ```
 
-> **`process_type` is currently vestigial.** Nothing `/generate` seeds, and
-> nothing `generate_draft_node` returns (only `draft` and
-> `draft_revision_count`), ever writes `process_type` into state. The
-> node reads it as a fallback (`case.process_type if case else
-> state.get("process_type")`), but that fallback can never be populated. Either
-> wire it or drop the field.
+Both `process_type` and `case_id` are set once, at `/generate`, directly from
+the endpoint's already-resolved inputs — neither is derived mid-graph from a
+DB row. `resolve_filing_data_node` and `generate_draft_node` read
+`state["process_type"]` directly; there is no fallback to a case's own
+`process_type`, since a case doesn't have one (see `docs/database.md`).
 
 ---
 
@@ -193,7 +217,7 @@ Endpoints never contain DB query code or LLM-calling code. There are two shapes:
 
 **Plain (the default, every feature except one):** the endpoint calls `services/`
 for the work and `repositories/` to persist/fetch, directly. No node, no
-`thread_id`, no `graph.ainvoke()`. Example: `POST /api/v1/ingest/{case_id}` calls
+`thread_id`, no `graph.ainvoke()`. Example: `POST /api/v1/ingest/{case_name}` calls
 `run_ingestion_pipeline()` then `IngestionRepository.save_files()`.
 
 **Graph-based (the draft agent only):** the endpoint accepts input (human

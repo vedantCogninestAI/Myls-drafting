@@ -39,8 +39,7 @@ async def generate_draft_node(state: DraftingState) -> dict:
         ingestion_repo = IngestionRepository(session)
         template_repo = TemplateRepository(session)
 
-        case = await ingestion_repo.get_case(case_id)
-        process_type = case.process_type if case else state.get("process_type")
+        process_type = state["process_type"]
 
         templates = await template_repo.get_by_process_type(process_type)
         files = await ingestion_repo.get_case_files(case_id)
@@ -129,6 +128,7 @@ def route_after_review(state: DraftingState) -> str:
             "draft_revision_cap_reached",
             case_id=state.get("case_id"),
             revision_count=state.get("draft_revision_count"),
+            max_revisions=settings.MAX_DRAFT_REVISIONS,
         )
         return "done"
     return "regenerate"

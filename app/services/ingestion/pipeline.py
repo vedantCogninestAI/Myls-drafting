@@ -162,7 +162,12 @@ async def _extract_fields_single(
 async def extract_form_fields(
     filed_docs: dict[str, str],
 ) -> tuple[dict[str, dict], dict[str, str]]:
-    logger.info("field_extraction_batch_started", file_count=len(filed_docs))
+    logger.info(
+        "field_extraction_batch_started",
+        file_count=len(filed_docs),
+        concurrency=settings.INGESTION_CONCURRENCY,
+        llm_max_retries=settings.LLM_MAX_RETRIES,
+    )
     semaphore = asyncio.Semaphore(settings.INGESTION_CONCURRENCY)
     tasks = [_extract_fields_single(semaphore, name, text) for name, text in filed_docs.items()]
     outcomes = await asyncio.gather(*tasks)

@@ -25,3 +25,7 @@ class TemplateRepository:
             select(Template).where(Template.process_type == process_type)
         )
         return list(result.scalars().all())
+
+    async def get_distinct_process_types(self) -> list[str]:
+        result = await self.session.execute(select(Template.process_type).distinct())
+        return list(result.scalars().all())

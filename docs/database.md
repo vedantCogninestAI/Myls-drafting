@@ -29,15 +29,15 @@ URL-encode special characters in the password (e.g. `@` → `%40`) — see `docs
 
 ### `cases`
 
-The anchor record for a drafting run. Every other case-scoped table points back to this via `case_id`.
+The anchor record for a client's ingested data — not tied to any particular draft type. Every other case-scoped table points back to this via `case_id`. A case carries no `process_type` of its own: the same case's ingested data can be drafted against any `process_type` (looked up independently from `templates`, see `docs/templates.md`), chosen at draft-generation time (`docs/draft.md`), not fixed at case creation.
 
 | Column | Type | Notes |
 |---|---|---|
-| `id` | Integer, PK, autoincrement | Deliberately a simple incrementing id (not UUID like the other tables here) — cases are a human-facing business entity a firm will reference by number. |
-| `process_type` | String, nullable | Legal process being followed (e.g. `"I-485"`), mirrors `DraftingState.process_type`. |
+| `id` | Integer, PK, autoincrement | Internal anchor other tables FK to (`ingestion_files.case_id`, `form_fields.case_id`) — not the identifier callers use. |
+| `case_name` | String, not null, unique | The human-facing identifier — set once at `POST /session/start`, enforced unique at the DB level (`uq_cases_case_name`) so it can be used directly in API paths (`/ingest/{case_name}`, `/draft/{case_name}/{process_type}/...`) without ambiguity. |
 | `created_at` | DateTime (tz) | `server_default=now()` |
 
-Model: `app/models/case.py`
+Model: `app/models/case.py`. Repository: `app/repositories/ingestion.py` — `create_case()` (raises on a duplicate `case_name`, caught by the endpoint and returned as `400`), `get_case_by_name()` (resolves the API-facing name to the row, used by every downstream endpoint), `list_cases()` (backs `GET /api/v1/session/cases`, the enum a UI selects a case from).
 
 ### `ingestion_files`
 
@@ -57,7 +57,7 @@ One row per uploaded PDF (not one row per case) — a case that uploads 5 files 
 
 Model: `app/models/ingestion.py`. Repository: `app/repositories/ingestion.py` (`create_case()`, `save_files()`).
 
-**Status:** wired — `POST /session/start` creates the `cases` row (plain DB write, no graph); `POST /api/v1/ingest/{case_id}` writes one `ingestion_files` row per uploaded PDF (OCR text + classification) after the pipeline runs — a plain endpoint call, not a graph node (see `docs/ingestion.md`). `s3_url` is currently always `null` — S3 upload isn't built yet (deliberately deferred, no bucket configured).
+**Status:** wired — `POST /session/start` creates the `cases` row from a `case_name` (plain DB write, no graph); `POST /api/v1/ingest/{case_name}` resolves the name to its row, then writes one `ingestion_files` row per uploaded PDF (OCR text + classification) after the pipeline runs — a plain endpoint call, not a graph node (see `docs/ingestion.md`). `s3_url` is currently always `null` — S3 upload isn't built yet (deliberately deferred, no bucket configured).
 
 ### `form_fields`
 
@@ -73,7 +73,7 @@ One row per `filed_doc`-classified PDF — the structured field extraction ("Ext
 
 Model: `app/models/ingestion.py` (`FormFields`, alongside `IngestionFile`). Repository: `app/repositories/ingestion.py` (`save_form_fields()`).
 
-**Status:** wired and verified end-to-end. After `ingestion_files` rows are saved, the `POST /api/v1/ingest/{case_id}` endpoint calls `IngestionRepository.get_filed_docs(case_id)` — a real `SELECT ... WHERE case_id = ? AND doc_type = 'filed_doc' AND fields_extracted = false`, not an in-memory filter — so it picks up *every* unextracted form for the case, not just files from the current request. This means calling `/ingest` again for the same case re-checks all its forms and extracts any that were added or flagged since the last call, without re-processing ones already done. `save_form_fields()` sets `fields_extracted = true` in the same transaction as inserting the `form_fields` row, so the two never drift out of sync. A file that fails extraction stays `fields_extracted = false` and will be retried on the next `/ingest` call for that case — logged via `field_extraction_partial_failure`, doesn't block the rest of the request. Not surfaced in `/ingest`'s own `POST` response, but fetchable via `GET /api/v1/ingest/{case_id}` — see `docs/ingestion.md`.
+**Status:** wired and verified end-to-end. After `ingestion_files` rows are saved, the `POST /api/v1/ingest/{case_name}` endpoint calls `IngestionRepository.get_filed_docs(case_id)` — a real `SELECT ... WHERE case_id = ? AND doc_type = 'filed_doc' AND fields_extracted = false`, not an in-memory filter — so it picks up *every* unextracted form for the case, not just files from the current request. This means calling `/ingest` again for the same case re-checks all its forms and extracts any that were added or flagged since the last call, without re-processing ones already done. `save_form_fields()` sets `fields_extracted = true` in the same transaction as inserting the `form_fields` row, so the two never drift out of sync. A file that fails extraction stays `fields_extracted = false` and will be retried on the next `/ingest` call for that case — logged via `field_extraction_partial_failure`, doesn't block the rest of the request. Not surfaced in `/ingest`'s own `POST` response, but fetchable via `GET /api/v1/ingest/{case_name}` — see `docs/ingestion.md`.
 
 ### `form_fees`
 
@@ -126,7 +126,7 @@ Reference/sample documents the draft-generation agent uses to model its output s
 | Column | Type | Notes |
 |---|---|---|
 | `id` | UUID, PK, default `uuid4()` | |
-| `process_type` | String, indexed, not null | Matches `cases.process_type` / `DraftingState.process_type` — not a formal FK, just a matching key looked up by the draft agent. |
+| `process_type` | String, indexed, not null | The only place a `process_type` is defined — not a formal FK to anywhere, just a string the draft agent matches against `DraftingState.process_type` (supplied per-request at `/draft/{case_name}/{process_type}/generate`, not stored on any case). See `docs/templates.md`. |
 | `filename` | String, not null | Original filename of the sample `.docx`. |
 | `ocr_text` | Text, not null | Column name is misleading — this is **not** OCR output, it's structure extracted directly from the `.docx` via `python-docx` (headings/lists/tables/alignment), zero LLM calls. See `docs/templates.md`. |
 | `is_active` | Boolean, not null, default `false` | Meant to be admin-set — only active templates should be read by the draft agent, max 2 per `process_type` by convention (not DB-enforced). Currently never set to `true` by any code path — the draft agent works around this by using every row for a `process_type`, unfiltered. |

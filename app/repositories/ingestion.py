@@ -11,12 +11,20 @@ class IngestionRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def create_case(self, process_type: str | None = None) -> Case:
-        case = Case(process_type=process_type)
+    async def create_case(self, case_name: str) -> Case:
+        case = Case(case_name=case_name)
         self.session.add(case)
         await self.session.commit()
         await self.session.refresh(case)
         return case
+
+    async def get_case_by_name(self, case_name: str) -> Case | None:
+        result = await self.session.execute(select(Case).where(Case.case_name == case_name))
+        return result.scalars().first()
+
+    async def list_cases(self) -> list[Case]:
+        result = await self.session.execute(select(Case).order_by(Case.created_at.desc()))
+        return list(result.scalars().all())
 
     async def save_files(self, case_id: int, files: list[dict]) -> list[IngestionFile]:
         records = [IngestionFile(case_id=case_id, **data) for data in files]
@@ -59,9 +67,6 @@ class IngestionRepository:
             select(FormFields).where(FormFields.case_id == case_id)
         )
         return list(result.scalars().all())
-
-    async def get_case(self, case_id: int) -> Case | None:
-        return await self.session.get(Case, case_id)
 
     async def get_file_by_filename(self, case_id: int, filename: str) -> IngestionFile | None:
         result = await self.session.execute(

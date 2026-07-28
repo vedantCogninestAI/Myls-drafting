@@ -222,7 +222,14 @@ async def scrape_all_addresses(
     client = new_client()
     entries = await fetch_all_forms_list(client)
 
-    batch_size = settings.FEE_SCRAPE_CONCURRENCY
+    batch_size = settings.SCRAPE_CONCURRENCY
+    logger.info(
+        "scrape_all_addresses_started",
+        entry_count=len(entries),
+        concurrency=batch_size,
+        batch_delay=settings.FEE_SCRAPE_BATCH_DELAY,
+        timeout=settings.FEE_SCRAPE_TIMEOUT,
+    )
     address_items: list[dict] = []
     for i in range(0, len(entries), batch_size):
         batch = entries[i : i + batch_size]
