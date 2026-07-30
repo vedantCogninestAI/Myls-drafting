@@ -4,8 +4,8 @@ from logging.config import fileConfig
 
 from alembic import context
 
-# psycopg's async driver requires a SelectorEventLoop; Windows defaults to
-# ProactorEventLoop, which it can't use.
+# Some async DB drivers require a SelectorEventLoop; Windows defaults to
+# ProactorEventLoop, which they can't use.
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 from sqlalchemy import pool
@@ -29,7 +29,7 @@ target_metadata = Base.metadata
 # Built directly as a dict (not via config.set_main_option) so a `%` in the
 # DB password (e.g. a URL-encoded character) isn't misread as configparser
 # interpolation syntax.
-DATABASE_URL = settings.DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
+DATABASE_URL = settings.DATABASE_URL.replace("mysql://", "mysql+asyncmy://", 1)
 
 
 def run_migrations_offline() -> None:

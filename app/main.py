@@ -2,11 +2,12 @@ import asyncio
 import sys
 from contextlib import asynccontextmanager
 
+import asyncmy
 import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from psycopg_pool import AsyncConnectionPool
+from langgraph.checkpoint.mysql.asyncmy import AsyncMySaver
+from sqlalchemy.engine import make_url
 
 from app.api.v1.router import router as v1_router
 from app.config import settings
@@ -14,8 +15,8 @@ from app.core.logging import setup_logging
 from app.graph.main_graph import build_graph
 from app.middleware.request_logging import RequestLoggingMiddleware
 
-# psycopg's async driver requires a SelectorEventLoop; Windows defaults to
-# ProactorEventLoop, which it can't use.
+# Some async DB drivers require a SelectorEventLoop; Windows defaults to
+# ProactorEventLoop, which they can't use.
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
@@ -40,15 +41,30 @@ async def lifespan(app: FastAPI):
         aws_region=settings.AWS_REGION,
         log_level=settings.LOG_LEVEL,
     )
-    # autocommit is required: the checkpointer's setup migrations include
-    # `CREATE INDEX CONCURRENTLY`, which cannot run inside a transaction.
-    async with AsyncConnectionPool(
-        conninfo=settings.DATABASE_URL, kwargs={"autocommit": True}
-    ) as pool:
-        checkpointer = AsyncPostgresSaver(pool)
+    # Not using AsyncMySaver.from_conn_string(DATABASE_URL) here: it parses
+    # the connection string with a plain urllib.parse.urlparse(), which does
+    # NOT decode percent-encoded characters in the password (e.g. "%40"
+    # stays literal instead of becoming "@") — unlike SQLAlchemy's URL
+    # parser, which does. A password containing a URL-encoded character
+    # (as recommended in docs/setup.md) would silently fail to authenticate.
+    # The connection is built manually instead, using SQLAlchemy's URL
+    # parser for correct decoding.
+    db_url = make_url(settings.DATABASE_URL)
+    conn = await asyncmy.connect(
+        host=db_url.host,
+        port=db_url.port or 3306,
+        user=db_url.username,
+        password=db_url.password or "",
+        database=db_url.database,
+        autocommit=True,
+    )
+    try:
+        checkpointer = AsyncMySaver(conn=conn)
         await checkpointer.setup()
         app.state.graph = build_graph(checkpointer=checkpointer)
         yield
+    finally:
+        conn.close()
 
 
 def create_app() -> FastAPI:

@@ -1,5 +1,5 @@
 from sqlalchemy import delete, func, select
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.fee import FormFee
@@ -18,16 +18,17 @@ class FeeRepository:
         rows = list(deduped.values())
 
         stmt = insert(FormFee).values(rows)
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["form_number", "filing_category"],
-            set_={
-                "form_title": stmt.excluded.form_title,
-                "form_url": stmt.excluded.form_url,
-                "paper_fee": stmt.excluded.paper_fee,
-                "online_fee": stmt.excluded.online_fee,
-                "fee_details": stmt.excluded.fee_details,
-                "scraped_at": func.now(),
-            },
+        # MySQL's ON DUPLICATE KEY UPDATE has no `index_elements` — it fires
+        # whenever any unique constraint on the row is violated (here,
+        # uq_tb_form_fees_draft_ai_form_category), so the columns that make
+        # up that constraint are implicit rather than named.
+        stmt = stmt.on_duplicate_key_update(
+            form_title=stmt.inserted.form_title,
+            form_url=stmt.inserted.form_url,
+            paper_fee=stmt.inserted.paper_fee,
+            online_fee=stmt.inserted.online_fee,
+            fee_details=stmt.inserted.fee_details,
+            scraped_at=func.now(),
         )
         await self.session.execute(stmt)
         await self.session.commit()

@@ -40,15 +40,17 @@ one known, deliberately unfixed edge case — see "Known follow-up" below.
   132 forms to finish and doing one giant insert — `scraper.py` itself
   stays DB-free (no repository import), the callback is how persistence
   gets wired in from `fee_service.py`.
-- `run_fee_scrape()` clears `form_fees` before repopulating it,
-  so a fresh scrape does not leave stale rows from an older parser
+- `run_fee_scrape()` clears `tb_form_fees_draft_ai` before repopulating
+  it, so a fresh scrape does not leave stale rows from an older parser
   version sitting next to corrected rows.
 - `FeeRepository.bulk_upsert` dedupes incoming rows by
-  `(form_number, filing_category)` before the insert, because Postgres's
-  `ON CONFLICT DO UPDATE` cannot affect the same row twice in one
-  statement (`CardinalityViolation`) — and USCIS's own data does contain
-  same-key duplicates in some batches (e.g. the same form listed under
-  multiple `topic_id`s in the dropdown).
+  `(form_number, filing_category)` before the insert. MySQL's
+  `ON DUPLICATE KEY UPDATE` (unlike Postgres's `ON CONFLICT DO UPDATE`,
+  which this project used before moving to MySQL — see `docs/database.md`)
+  doesn't error on same-key duplicates within one batch, but the dedup
+  stays anyway for predictable last-write-wins behavior — USCIS's own
+  data does contain same-key duplicates in some batches (e.g. the same
+  form listed under multiple `topic_id`s in the dropdown).
 - Structured logs (`structlog`, JSON) are emitted at every stage —
   `scrape_all_fees_started` (includes the actual `concurrency`,
   `batch_delay`, and `timeout` in effect, so a slow/rate-limited run can be
@@ -246,7 +248,7 @@ row as JSONB, same safety-net pattern as `fee_details`), `scraped_at`,
 **Migration note**: LangGraph's checkpoint tables (`checkpoints`,
 `checkpoint_writes`, `checkpoint_blobs`, `checkpoint_migrations`) aren't
 in our SQLAlchemy models (managed separately by
-`AsyncPostgresSaver.setup()` at startup), so `--autogenerate` always
+`AsyncMySaver.setup()` at startup), so `--autogenerate` always
 proposes dropping them. Strip those `op.drop_table`/`op.drop_index` calls
 (and their `downgrade()` counterparts) out of any newly generated
 migration before applying it.

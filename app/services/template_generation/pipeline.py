@@ -92,13 +92,27 @@ def _table_to_markdown(table: Table) -> str:
 def _docx_to_markdown(docx_bytes: bytes) -> str:
     document = Document(io.BytesIO(docx_bytes))
     blocks = []
+    blank_run = 0
     for block in _iter_block_items(document):
         if isinstance(block, Paragraph):
             md = _paragraph_to_markdown(block)
         else:
             md = _table_to_markdown(block)
-        if md:
-            blocks.append(md)
+
+        if not md:
+            # A single blank paragraph is the normal default separator
+            # (already implicit in the "\n\n" join below) — only a run of
+            # 2 or more is unusual enough to be worth surfacing. Tables
+            # can also parse to "" (no rows) but never represent a
+            # deliberate spacing gap, so they don't count toward this.
+            if isinstance(block, Paragraph):
+                blank_run += 1
+            continue
+
+        if blank_run >= 2:
+            blocks.append(f"[BLANK LINES: {blank_run}]")
+        blank_run = 0
+        blocks.append(md)
     return "\n\n".join(blocks)
 
 

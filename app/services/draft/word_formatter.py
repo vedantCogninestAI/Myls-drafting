@@ -121,6 +121,10 @@ def draft_to_docx_bytes(draft_text: str) -> bytes:
         if not block:
             continue
 
+        if block == "[PAGE BREAK]":
+            doc.add_page_break()
+            continue
+
         table_rows = _parse_markdown_table(block)
         if table_rows is not None:
             table = doc.add_table(rows=len(table_rows), cols=len(table_rows[0]))

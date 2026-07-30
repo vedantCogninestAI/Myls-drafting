@@ -92,7 +92,7 @@ output of its own — it only populates state that `generate_draft` reads.
 (`build_graph(checkpointer=...)` in `app/main.py`, stored on `app.state.graph`).
 Compiling only builds the node/edge structure — it runs no node logic. The graph
 is invoked (`await graph.ainvoke(...)`) per API call that needs it: each
-invocation loads that `thread_id`'s state from Postgres, merges in new input,
+invocation loads that `thread_id`'s state from MySQL, merges in new input,
 runs whatever node comes next, and saves the updated state back.
 
 `thread_id` is never API-facing. The draft endpoints take `case_name` +
@@ -290,7 +290,7 @@ When unsure, default to *not* creating a new file.
 | Rule | Reason |
 |---|---|
 | Compile the graph once at app startup, reuse across all requests | Compiling per request kills performance |
-| Use `AsyncPostgresSaver` as the checkpointer | State must survive server restarts; sessions can span hours |
+| Use `AsyncMySaver` as the checkpointer | State must survive server restarts; sessions can span hours |
 | All HITL is implemented via LangGraph `interrupt()` | Keeps pause/resume logic inside the graph, not scattered across endpoints |
 | `resolve_filing_data`, `generate_draft`, and `draft_review` stay separate nodes | LangGraph re-runs a node from the top on resume; merging them would re-run the expensive LLM call(s) on every `/approve` |
 | `resolve_filing_data` runs unconditionally ahead of every `generate_draft` pass, not just the first | A revision's feedback content must never gate whether filing data gets (re-)resolved — see `docs/draft.md`'s "Two-Agent Split" for the bug this prevents |

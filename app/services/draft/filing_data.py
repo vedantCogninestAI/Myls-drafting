@@ -171,8 +171,12 @@ async def resolve_filing_data(
                 form_number = tool_input["form_number"]
                 lookup = await fetchers[tool_name](form_number)
                 result_text = lookup.content
-                if lookup.row_count:
-                    results_by_tool[tool_name].append(lookup.content)
+                # Appended regardless of row_count — a "nothing found" result
+                # (see _NOT_FOUND_INSTRUCTION in graph/nodes/filing_data.py)
+                # must still reach the drafting agent's Filing Data section,
+                # not be silently dropped to a bare None indistinguishable
+                # from "this document never needed the value at all."
+                results_by_tool[tool_name].append(lookup.content)
                 log.info(
                     "filing_data_resolution_tool_call",
                     tool=tool_name,

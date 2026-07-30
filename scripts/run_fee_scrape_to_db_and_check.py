@@ -168,7 +168,7 @@ async def main() -> None:
     OUT_DIR.mkdir(exist_ok=True)
     async with AsyncSessionLocal() as session:
         repository = FeeRepository(session)
-        print("starting DB scrape; this clears and repopulates form_fees", flush=True)
+        print("starting DB scrape; this clears and repopulates tb_form_fees_draft_ai", flush=True)
         upserted = await run_fee_scrape(repository)
         result = await session.execute(select(FormFee))
         rows = [model_to_dict(row) for row in result.scalars().all()]
@@ -181,7 +181,7 @@ async def main() -> None:
     payload = {
         "generated_at": datetime.now().isoformat(),
         "source": "DB after run_fee_scrape(repository)",
-        "table": "form_fees",
+        "table": "tb_form_fees_draft_ai",
         "upserted_count": upserted,
         "db_row_count": len(rows),
         "all_resolved": all(issue["resolved"] for issue in verdicts.values()),

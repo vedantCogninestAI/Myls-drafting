@@ -1,5 +1,5 @@
 from sqlalchemy import func, select
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.address import FormAddress
@@ -20,17 +20,18 @@ class AddressRepository:
         rows = list(deduped.values())
 
         stmt = insert(FormAddress).values(rows)
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["form_number", "filing_scenario", "lockbox_name"],
-            set_={
-                "form_title": stmt.excluded.form_title,
-                "form_url": stmt.excluded.form_url,
-                "applies_to": stmt.excluded.applies_to,
-                "usps_address": stmt.excluded.usps_address,
-                "courier_address": stmt.excluded.courier_address,
-                "address_details": stmt.excluded.address_details,
-                "scraped_at": func.now(),
-            },
+        # MySQL's ON DUPLICATE KEY UPDATE has no `index_elements` — it fires
+        # whenever any unique constraint on the row is violated (here,
+        # uq_tb_form_address_draft_ai_form_scenario_lockbox), so the columns
+        # that make up that constraint are implicit rather than named.
+        stmt = stmt.on_duplicate_key_update(
+            form_title=stmt.inserted.form_title,
+            form_url=stmt.inserted.form_url,
+            applies_to=stmt.inserted.applies_to,
+            usps_address=stmt.inserted.usps_address,
+            courier_address=stmt.inserted.courier_address,
+            address_details=stmt.inserted.address_details,
+            scraped_at=func.now(),
         )
         await self.session.execute(stmt)
         await self.session.commit()

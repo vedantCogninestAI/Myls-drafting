@@ -13,6 +13,16 @@ from app.services.draft.filing_data import FilingLookupResult, resolve_filing_da
 
 logger = structlog.get_logger(__name__)
 
+# Appended to a "nothing found" tool result so it's not just discarded by
+# the drafting agent as an absent Filing Data section — it explicitly
+# carries the instruction for what to do about it, same rule the system
+# prompt states, restated here so it survives even if that context is
+# crowded out by everything else in a long prompt.
+_NOT_FOUND_INSTRUCTION = (
+    " This is not a value to use — mark it as [GAP: ...] in the draft. Never "
+    "substitute a reference template's value or your own knowledge for this instead."
+)
+
 
 def _format_fee_result(form_number: str, rows: list, match: FormNumberMatch) -> FilingLookupResult:
     if not rows:
@@ -24,6 +34,7 @@ def _format_fee_result(form_number: str, rows: list, match: FormNumberMatch) -> 
                 f"was '{match.form_number}' at {match.score:.0f}%, below the "
                 f"{FUZZY_MATCH_THRESHOLD:.0f}% match threshold."
             )
+        content += _NOT_FOUND_INSTRUCTION
         return FilingLookupResult(
             matched_form_number=match.form_number, score=match.score, row_count=0, content=content
         )
@@ -55,6 +66,7 @@ def _format_address_result(form_number: str, rows: list, match: FormNumberMatch)
                 f"match was '{match.form_number}' at {match.score:.0f}%, below the "
                 f"{FUZZY_MATCH_THRESHOLD:.0f}% match threshold."
             )
+        content += _NOT_FOUND_INSTRUCTION
         return FilingLookupResult(
             matched_form_number=match.form_number, score=match.score, row_count=0, content=content
         )

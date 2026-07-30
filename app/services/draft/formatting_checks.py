@@ -6,6 +6,8 @@ _ORPHAN_BRACKET_RE = re.compile(r"^[:)]$")
 _CODE_FENCE_RE = re.compile(r"```")
 _EXAMPLE_LEAK_RE = re.compile(r"\bExample\s+(\d+)\b")
 _FILENAME_RE = re.compile(r'"([^"\n]+\.[A-Za-z0-9]{2,5})"')
+_BLANK_LINES_LEAK_RE = re.compile(r"\[BLANK LINES:\s*\d+\]")
+_PAGE_BREAK_MARKER = "[PAGE BREAK]"
 
 
 def check_formatting(draft_text: str, available_files: list[dict]) -> list[str]:
@@ -22,6 +24,14 @@ def check_formatting(draft_text: str, available_files: list[dict]) -> list[str]:
 
         if _ORPHAN_BRACKET_RE.match(line):
             issues.append(f"line {line_no}: orphaned bracket-only line ('{line}')")
+            continue
+
+        if line.startswith(_PAGE_BREAK_MARKER):
+            if line != _PAGE_BREAK_MARKER:
+                issues.append(
+                    f"line {line_no}: [PAGE BREAK] must appear alone on its own line, "
+                    f"with nothing else combined ('{line}')"
+                )
             continue
 
         label_match = _ALIGNMENT_LABEL_RE.match(line)
@@ -44,6 +54,13 @@ def check_formatting(draft_text: str, available_files: list[dict]) -> list[str]:
         issues.append(
             "draft references reference-template labels that must never appear in real "
             "output: " + ", ".join(f"'Example {n}'" for n in example_leaks)
+        )
+
+    if _BLANK_LINES_LEAK_RE.search(draft_text):
+        issues.append(
+            "draft contains a '[BLANK LINES: N]' marker, which is a reference-template-only "
+            "label and must never appear in real output — use [PAGE BREAK] if a page break is "
+            "warranted at that point, otherwise omit it entirely"
         )
 
     known_filenames = {f["filename"] for f in available_files}

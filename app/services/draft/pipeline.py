@@ -1,6 +1,7 @@
 import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from typing import Awaitable, Callable
 
 import structlog
@@ -87,7 +88,10 @@ def _build_initial_message(
     files_block = "\n".join(
         f'- "{f["filename"]}" (doc_type: {f["doc_type"]})' for f in available_files
     ) or "(none — this case has no exhibits)"
+    _now = datetime.now()
+    today_str = f"{_now:%B} {_now.day}, {_now:%Y}"
     message = (
+        f"## Today's Date\n{today_str}\n\n"
         f"## Reference Templates\n\n{template_blocks}\n\n"
         f"## Form Data (JSON)\n{json.dumps(form_data, indent=2)}\n\n"
         f"## Available Files\n{files_block}"

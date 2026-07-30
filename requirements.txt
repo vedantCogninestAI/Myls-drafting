@@ -5,9 +5,9 @@ python-multipart
 
 # LangGraph
 langgraph
-langgraph-checkpoint-postgres
-psycopg[binary]
-psycopg-pool
+langgraph-checkpoint-mysql
+asyncmy
+cryptography  # required by asyncmy for MySQL 8's caching_sha2_password auth
 
 # LLM / AWS
 boto3

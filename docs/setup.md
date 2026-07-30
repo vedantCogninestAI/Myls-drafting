@@ -3,8 +3,8 @@
 ## Prerequisites
 
 - Python 3.12+
-- A local PostgreSQL instance (pgAdmin or any client works — you just need
-  a connection string)
+- A local MySQL instance (MySQL Workbench or any client works — you just
+  need a connection string)
 
 ## Steps
 
@@ -22,7 +22,7 @@
 
 3. **Create a database** for the project (any name), then set `.env`:
    ```
-   DATABASE_URL=postgresql://<user>:<password>@<host>:<port>/<dbname>
+   DATABASE_URL=mysql://<user>:<password>@<host>:<port>/<dbname>
    ```
    If your password contains special characters (e.g. `@`), URL-encode
    them — `@` becomes `%40`, etc. Otherwise the connection string parser
@@ -85,15 +85,17 @@ as the app (via `app.core.db.engine`), require typing `yes` to confirm,
 and print row counts before/after so the effect is visible.
 
 - **`python reset_db.py`** — wipes all case/ingestion/template data
-  (`cases`, `ingestion_files`, `form_fields`, `templates`, plus LangGraph's
-  checkpoint tables) in one atomic `TRUNCATE ... CASCADE`. Leaves scraped
-  reference data (`form_fees`, `form_address`) untouched. Useful after a
-  schema-breaking change, so stale rows/checkpoints from before don't
-  linger against a new schema.
-- **`python reset_scraped_data.py`** — wipes `form_fees` and/or
-  `form_address` only (interactive prompt: fees, addresses, or both).
-  These have no foreign keys in either direction (see `docs/database.md`),
-  so wiping them is always safe in isolation, independent of case data.
+  (`tb_cases_draft_ai`, `tb_ingestion_files_draft_ai`,
+  `tb_form_fields_draft_ai`, `tb_templates_draft_ai`, plus LangGraph's
+  checkpoint tables) in one atomic truncate. Leaves scraped reference data
+  (`tb_form_fees_draft_ai`, `tb_form_address_draft_ai`) untouched. Useful
+  after a schema-breaking change, so stale rows/checkpoints from before
+  don't linger against a new schema.
+- **`python reset_scraped_data.py`** — wipes `tb_form_fees_draft_ai`
+  and/or `tb_form_address_draft_ai` only (interactive prompt: fees,
+  addresses, or both). These have no foreign keys in either direction (see
+  `docs/database.md`), so wiping them is always safe in isolation,
+  independent of case data.
 - **`python convert_pdf_to_docx.py <input.pdf> <output.docx>`** — converts
   a PDF into an editable `.docx` via `pdf2docx`, preserving layout, text,
   and tables (not just a plain text dump). No `DATABASE_URL`/confirmation
@@ -136,12 +138,11 @@ run` is launched from.
 ## Windows-specific gotchas
 
 These are already fixed in the codebase, but documented here in case they
-resurface (e.g. after an `alembic`/`psycopg` version bump):
+resurface (e.g. after an `alembic`/`asyncmy` version bump):
 
-- **`psycopg`'s async driver needs a `SelectorEventLoop`.** Windows
-  defaults to `ProactorEventLoop`, which `psycopg` can't use for async
-  connections — it fails with `psycopg.InterfaceError: Psycopg cannot use
-  the 'ProactorEventLoop'...`. Fixed by setting
+- **`asyncmy`'s async driver needs a `SelectorEventLoop`.** Windows
+  defaults to `ProactorEventLoop`, which many async DB drivers (including
+  `asyncmy`) can't use. Fixed by setting
   `asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())`
   near the top of both `app/main.py` and `alembic/env.py`, guarded by
   `sys.platform == "win32"`.
@@ -156,10 +157,10 @@ resurface (e.g. after an `alembic`/`psycopg` version bump):
 
 ## LangGraph checkpointer
 
-`app/main.py`'s startup calls `AsyncPostgresSaver(pool).setup()`, which
-creates LangGraph's own checkpoint tables automatically the first time the
-app boots against your DB — **this is separate from Alembic**, nothing to
-run manually for it. It does require the connection pool to be in
-`autocommit` mode (`AsyncConnectionPool(..., kwargs={"autocommit":
-True})`), because one of its setup migrations runs `CREATE INDEX
-CONCURRENTLY`, which can't execute inside a transaction.
+`app/main.py`'s startup calls `AsyncMySaver.from_conn_string(settings.DATABASE_URL)`
+(from `langgraph-checkpoint-mysql`), which creates LangGraph's own
+checkpoint tables automatically the first time the app boots against your
+DB — **this is separate from Alembic**, nothing to run manually for it.
+`from_conn_string` opens a single connection internally (not a pool) —
+fine for now, worth revisiting if the app needs to handle several
+simultaneous draft-generation requests under real concurrency.
