@@ -13,3 +13,8 @@ __pycache__/
 outputs/
 
 .DS_Store
+
+# Local-only DB utility scripts and connection-string helpers — never pushed
+reset_db.py
+reset_scraped_data.py
+build_database_url.ipynb
