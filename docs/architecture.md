@@ -36,9 +36,9 @@ Using the AI agent, generate the draft of the document
 | Step | Status |
 |---|---|
 | Store files in S3 | ❌ Not built — no bucket configured yet |
-| Generate OCR of all documents (classify doc/proof) | ✅ `POST /api/v1/ingest/{case_name}` → `app/services/ingestion/pipeline.py`. See `docs/ingestion.md` |
-| Store extracted OCR/classification in DB | ✅ `ingestion_files` table, one row per file. See `docs/database.md` |
-| Extract the JSON (all fields) of forms | ✅ `extract_form_fields()` (`app/services/ingestion/pipeline.py`), runs only on `filed_doc` files, writes to `form_fields` |
+| Generate OCR of all documents (classify doc/proof) | ✅ `POST /api/v1/ingest/{case_name}` → `app/services/ingestion/pipeline.py` (PDF, OCR-based) + `app/services/ingestion/docx_pipeline.py` (`.docx`, `python-docx`-based, no OCR) — both classify into the same three types (`exhibit`/`filed_doc`/`ic_notes`). See `docs/ingestion.md` |
+| Store extracted OCR/classification in DB | ✅ `ingestion_files` table, one row per file (PDF or `.docx`). See `docs/database.md` |
+| Extract the JSON (all fields) of forms | ✅ `extract_form_fields()` for `filed_doc` files, `extract_ic_notes_fields()` for `ic_notes` files (`app/services/ingestion/pipeline.py`), both write to `form_fields` |
 | Fees & address data (scraped) | ✅ `form_fees`, `form_address` tables. See `docs/scraping.md` |
 | Templates in DB | ✅ `templates` table, upload + fetch at `/api/v1/template-generation/{process_type}` — also the sole origination point for a `process_type`, since cases don't carry one. See `docs/templates.md` |
 | AI agent generates the draft | ✅ Two agents, two graph nodes: `resolve_filing_data_node` (fetches fee/address, `app/graph/nodes/filing_data.py`) runs first, then `generate_draft_node` (`app/graph/nodes/draft.py`) writes the document using whatever it resolved. `case_name` and `process_type` are both supplied independently at `/draft/{case_name}/{process_type}/generate` — see `docs/draft.md`'s "Two-Agent Split" |

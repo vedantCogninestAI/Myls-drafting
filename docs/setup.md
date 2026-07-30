@@ -32,9 +32,12 @@
    `app/config.py` have defaults. Two have no default and will crash
    `Settings()` on import if missing from `.env`:
    - `CLASSIFY_PDF_LLM` (`true`/`false`) — toggles whether `/ingest` also
-     classifies each document as `exhibit`/`filed_doc` via Bedrock. OCR
-     always runs regardless of this flag; when `false`, extracted text is
-     returned with `type: null` instead of being classified.
+     classifies each document as `exhibit`/`filed_doc`/`ic_notes` via
+     Bedrock (name predates `.docx` support — it gates classification for
+     both PDF and `.docx` uploads, see `docs/ingestion.md`). Text
+     extraction (OCR for PDF, `python-docx` for `.docx`) always runs
+     regardless of this flag; when `false`, extracted text is returned
+     with `type: null` instead of being classified.
    - `TEMPLATE_CONCURRENCY` (int) — max sample `.docx` files parsed in
      parallel by `POST /api/v1/template-generation/{process_type}` (see
      `docs/templates.md`) — not an LLM call, just bounds concurrent
@@ -74,10 +77,12 @@
 
 ## Utility Scripts
 
-Both are standalone — not wired into the FastAPI app, not reachable over
-HTTP, run manually from the `backend/` directory. Both use the same
-`DATABASE_URL` as the app (via `app.core.db.engine`), require typing `yes`
-to confirm, and print row counts before/after so the effect is visible.
+All three are standalone — not wired into the FastAPI app, not reachable
+over HTTP, run manually from the `backend/` directory.
+
+`reset_db.py` and `reset_scraped_data.py` both use the same `DATABASE_URL`
+as the app (via `app.core.db.engine`), require typing `yes` to confirm,
+and print row counts before/after so the effect is visible.
 
 - **`python reset_db.py`** — wipes all case/ingestion/template data
   (`cases`, `ingestion_files`, `form_fields`, `templates`, plus LangGraph's
@@ -89,6 +94,16 @@ to confirm, and print row counts before/after so the effect is visible.
   `form_address` only (interactive prompt: fees, addresses, or both).
   These have no foreign keys in either direction (see `docs/database.md`),
   so wiping them is always safe in isolation, independent of case data.
+- **`python convert_pdf_to_docx.py <input.pdf> <output.docx>`** — converts
+  a PDF into an editable `.docx` via `pdf2docx`, preserving layout, text,
+  and tables (not just a plain text dump). No `DATABASE_URL`/confirmation
+  needed — it's a pure file-to-file conversion, no DB access at all. Does
+  not OCR: only works on PDFs with real embedded text (e.g. fillable USCIS
+  forms); a scanned image-only PDF comes through with the image placed
+  as-is rather than editable text. Useful as a manual pre-processing step
+  to get a PDF-only gold-standard template into `.docx` before uploading
+  it through `POST /api/v1/template-generation/{process_type}` (see
+  `docs/templates.md`), which only accepts `.docx`.
 
 ## Streamlit Test UI
 

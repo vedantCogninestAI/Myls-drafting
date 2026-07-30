@@ -11,6 +11,7 @@ from docx.table import Table, _Cell
 from docx.text.paragraph import Paragraph
 
 from app.config import settings
+from app.services.shared.pdf_conversion import pdf_bytes_to_docx_bytes
 
 logger = structlog.get_logger(__name__)
 _executor = ThreadPoolExecutor()
@@ -32,10 +33,26 @@ def _iter_block_items(parent):
             yield Table(child, parent)
 
 
+def _runs_to_markdown(paragraph: Paragraph) -> str:
+    parts = []
+    for run in paragraph.runs:
+        if not run.text:
+            continue
+        run_text = run.text
+        if run.bold and run.italic:
+            run_text = f"***{run_text}***"
+        elif run.bold:
+            run_text = f"**{run_text}**"
+        elif run.italic:
+            run_text = f"*{run_text}*"
+        parts.append(run_text)
+    return "".join(parts).strip()
+
+
 def _paragraph_to_markdown(paragraph: Paragraph) -> str:
-    text = paragraph.text.strip()
-    if not text:
+    if not paragraph.text.strip():
         return ""
+    text = _runs_to_markdown(paragraph)
 
     style_name = (paragraph.style.name or "").lower()
     if style_name.startswith("heading"):
@@ -88,12 +105,21 @@ def _docx_to_markdown(docx_bytes: bytes) -> str:
 async def _process_single(
     semaphore: asyncio.Semaphore,
     filename: str,
-    docx_bytes: bytes,
+    file_bytes: bytes,
 ) -> tuple[str, str | None, str | None]:
     async with semaphore:
         loop = asyncio.get_event_loop()
-        logger.info("template_processing_started", filename=filename, size_bytes=len(docx_bytes))
+        logger.info("template_processing_started", filename=filename, size_bytes=len(file_bytes))
         try:
+            docx_bytes = file_bytes
+            if filename.lower().endswith(".pdf"):
+                docx_bytes = await loop.run_in_executor(
+                    _executor, pdf_bytes_to_docx_bytes, file_bytes
+                )
+                logger.info(
+                    "template_pdf_converted", filename=filename, docx_size_bytes=len(docx_bytes)
+                )
+
             markdown_text = await loop.run_in_executor(_executor, _docx_to_markdown, docx_bytes)
             logger.info("template_processing_done", filename=filename, text_length=len(markdown_text))
             return filename, markdown_text, None

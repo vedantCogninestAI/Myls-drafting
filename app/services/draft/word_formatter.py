@@ -12,6 +12,28 @@ ALIGNMENT_MAP = {
 }
 
 _TABLE_SEPARATOR_CELL = re.compile(r"^:?-+:?$")
+_FORMATTED_SPAN_RE = re.compile(r"\*\*\*(.+?)\*\*\*|\*\*(.+?)\*\*|\*(.+?)\*", re.DOTALL)
+
+
+def _add_formatted_runs(paragraph, text: str) -> None:
+    pos = 0
+    for match in _FORMATTED_SPAN_RE.finditer(text):
+        if match.start() > pos:
+            paragraph.add_run(text[pos:match.start()])
+        bold_italic, bold_only, italic_only = match.groups()
+        if bold_italic is not None:
+            run = paragraph.add_run(bold_italic)
+            run.bold = True
+            run.italic = True
+        elif bold_only is not None:
+            run = paragraph.add_run(bold_only)
+            run.bold = True
+        else:
+            run = paragraph.add_run(italic_only)
+            run.italic = True
+        pos = match.end()
+    if pos < len(text):
+        paragraph.add_run(text[pos:])
 
 
 def _split_table_row(line: str) -> list[str]:
@@ -115,7 +137,8 @@ def draft_to_docx_bytes(draft_text: str) -> bytes:
                 block = block[len(label):].strip()
                 break
 
-        paragraph = doc.add_paragraph(block)
+        paragraph = doc.add_paragraph()
+        _add_formatted_runs(paragraph, block)
         paragraph.alignment = alignment
 
     buffer = BytesIO()

@@ -7,7 +7,12 @@ import fitz  # pymupdf
 import structlog
 
 from app.config import settings
-from app.prompts import DOCUMENT_CLASSIFICATION_PROMPT, FIELD_EXTRACTION_PROMPT, OCR_EXTRACTION_PROMPT
+from app.prompts import (
+    DOCUMENT_CLASSIFICATION_PROMPT,
+    FIELD_EXTRACTION_PROMPT,
+    IC_NOTES_EXTRACTION_PROMPT,
+    OCR_EXTRACTION_PROMPT,
+)
 from app.services.llm.client import invoke_with_image, invoke_with_text, retry_llm_call
 
 logger = structlog.get_logger(__name__)
@@ -84,7 +89,7 @@ async def _process_single(
             full_text = "\n\n".join([first_page_text] + remaining_texts)
             if doc_type is not None:
                 doc_type = doc_type.lower().strip()
-                if doc_type not in ("exhibit", "filed_doc"):
+                if doc_type not in ("exhibit", "filed_doc", "ic_notes"):
                     doc_type = "exhibit"
 
             logger.info(
@@ -142,34 +147,41 @@ def _parse_fields_json(raw: str) -> dict:
 async def _extract_fields_single(
     semaphore: asyncio.Semaphore,
     filename: str,
-    ocr_text: str,
+    text: str,
+    prompt: str,
+    event_prefix: str,
 ) -> tuple[str, dict | None, str | None]:
     async with semaphore:
         loop = asyncio.get_event_loop()
-        logger.info("field_extraction_started", filename=filename)
+        logger.info(f"{event_prefix}_started", filename=filename)
         try:
             raw = await loop.run_in_executor(
-                _executor, retry_llm_call, invoke_with_text, FIELD_EXTRACTION_PROMPT, ocr_text
+                _executor, retry_llm_call, invoke_with_text, prompt, text
             )
             fields = _parse_fields_json(raw)
-            logger.info("field_extraction_done", filename=filename, field_count=len(fields))
+            logger.info(f"{event_prefix}_done", filename=filename, field_count=len(fields))
             return filename, fields, None
         except Exception as exc:
-            logger.exception("field_extraction_failed", filename=filename, error=str(exc))
+            logger.exception(f"{event_prefix}_failed", filename=filename, error=str(exc))
             return filename, None, str(exc)
 
 
-async def extract_form_fields(
-    filed_docs: dict[str, str],
+async def _extract_fields_batch(
+    documents: dict[str, str],
+    prompt: str,
+    event_prefix: str,
 ) -> tuple[dict[str, dict], dict[str, str]]:
     logger.info(
-        "field_extraction_batch_started",
-        file_count=len(filed_docs),
+        f"{event_prefix}_batch_started",
+        file_count=len(documents),
         concurrency=settings.INGESTION_CONCURRENCY,
         llm_max_retries=settings.LLM_MAX_RETRIES,
     )
     semaphore = asyncio.Semaphore(settings.INGESTION_CONCURRENCY)
-    tasks = [_extract_fields_single(semaphore, name, text) for name, text in filed_docs.items()]
+    tasks = [
+        _extract_fields_single(semaphore, name, text, prompt, event_prefix)
+        for name, text in documents.items()
+    ]
     outcomes = await asyncio.gather(*tasks)
 
     results: dict[str, dict] = {}
@@ -181,8 +193,20 @@ async def extract_form_fields(
             results[filename] = fields
 
     logger.info(
-        "field_extraction_batch_done",
+        f"{event_prefix}_batch_done",
         success_count=len(results),
         failed_count=len(failed),
     )
     return results, failed
+
+
+async def extract_form_fields(
+    filed_docs: dict[str, str],
+) -> tuple[dict[str, dict], dict[str, str]]:
+    return await _extract_fields_batch(filed_docs, FIELD_EXTRACTION_PROMPT, "field_extraction")
+
+
+async def extract_ic_notes_fields(
+    ic_notes: dict[str, str],
+) -> tuple[dict[str, dict], dict[str, str]]:
+    return await _extract_fields_batch(ic_notes, IC_NOTES_EXTRACTION_PROMPT, "ic_notes_extraction")

@@ -108,12 +108,14 @@ def _build_initial_message(templates: list[str], form_data: dict[str, dict]) -> 
 
 async def resolve_filing_data(
     case_id: int,
+    process_type: str,
+    revision_count: int,
     templates: list[str],
     form_data: dict[str, dict],
     get_filing_fee: Callable[[str], Awaitable[FilingLookupResult]],
     get_filing_address: Callable[[str], Awaitable[FilingLookupResult]],
 ) -> FilingData:
-    log = logger.bind(case_id=case_id)
+    log = logger.bind(case_id=case_id, process_type=process_type, revision_count=revision_count)
     loop = asyncio.get_event_loop()
     messages = [
         {"role": "user", "content": [{"text": _build_initial_message(templates, form_data)}]}

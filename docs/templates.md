@@ -24,12 +24,14 @@ parsing is synchronous/blocking):
     .paragraphs/.tables are separate flat lists that lose interleaving —
     _iter_block_items() walks the raw XML body instead)
         ↓
-    for each paragraph: map style name → Markdown heading level (#/##/...),
-    bullet/numbered list (-/1.), or plain text; if alignment is CENTER,
-    RIGHT, or JUSTIFY (read directly from paragraph.alignment.name — not a
-    hardcoded lookup table), prefix the line with that label, e.g.
-    "[CENTER] Some Heading". Left-aligned (or unset) stays unmarked — the
-    default, no label.
+    for each paragraph: walk its runs (not paragraph.text directly) so
+    bold/italic survives — wrap each run in **bold**/*italic*/***both***
+    markdown per its run.bold/run.italic flags, then join into one string;
+    map style name → Markdown heading level (#/##/...), bullet/numbered
+    list (-/1.), or plain text; if alignment is CENTER, RIGHT, or JUSTIFY
+    (read directly from paragraph.alignment.name — not a hardcoded lookup
+    table), prefix the line with that label, e.g. "[CENTER] Some Heading".
+    Left-aligned (or unset) stays unmarked — the default, no label.
         ↓
     for each table: convert rows/cells directly to a Markdown table
     (the draft agent's `word_formatter.py` converts this same Markdown
@@ -48,7 +50,13 @@ Response: { "process_type": "...", "uploaded": [{"id": "...", "filename": "..."}
 
 `[CENTER]` / `[RIGHT]` / `[JUSTIFY]` — plain text labels prefixed on a line, not HTML. Left-aligned is the unmarked default, since most content is left-aligned and marking every line would be noise. This is the *same* convention the draft agent is instructed to use in its own generated output (see `docs/draft.md`) — templates and generated drafts speak the same structural language.
 
-**Deliberately not captured:** indentation, fonts, colors, exact spacing, headers/footers, images. Only alignment plus structural elements (headings, lists, tables) are tracked — a deliberate scope decision, not an oversight. `python-docx` can also read indentation (`paragraph.paragraph_format.left_indent`), which does matter for some templates, but scope is kept to alignment only for now.
+## Bold/Italic Convention
+
+Standard markdown inline formatting — `**bold**`, `*italic*`, `***bold and italic***` — captured per run (`_runs_to_markdown()` in `app/services/template_generation/pipeline.py`), not per paragraph, since a single line can mix bold and non-bold text (e.g. a bolded name inside a sentence). Same convention the draft agent is instructed to reproduce (see `docs/draft.md`), and the same one `word_formatter.py` parses back into real `.docx` run-level `bold`/`italic` when reconstructing a generated draft.
+
+A single visual line in a source `.docx` is often split into several adjacent runs with identical formatting (an artifact of how the file was originally authored/edited in Word) — capture wraps each run independently rather than merging them first, so a bold line can come out as `**text one****text two**` instead of `**text onetext two**`. This looks redundant but is harmless: `word_formatter.py`'s parser is non-greedy and splits correctly at each `**` boundary regardless, so both spans still end up bold with no stray asterisks in the final document. Verified via a full capture → export round-trip against a real sample template (160 bold runs reconstructed, zero stray literal asterisks in the output).
+
+**Deliberately not captured:** indentation, font family/name, font size, colors, exact spacing, headers/footers, images. Bold and italic are the only run-level formatting tracked, alongside alignment and the structural elements (headings, lists, tables) above — a deliberate scope decision, not an oversight. `python-docx` can also read indentation (`paragraph.paragraph_format.left_indent`) and font name/size (`run.font.name`/`run.font.size`), which do matter for some templates, but scope is kept to this set for now.
 
 ## Fetching Stored Templates
 
@@ -61,7 +69,7 @@ Response: { "process_type": "...", "uploaded": [{"id": "...", "filename": "..."}
     {
       "id": "9f2c7e10-5678-4c1d-8e2f-abcdef654321",
       "filename": "sample_i130_approved.docx",
-      "ocr_text": "[CENTER] GEHI & ASSOCIATES\n\n[CENTER] ATTORNEYS & COUNSELORS AT LAW\n\n...\n\n[JUSTIFY] I am the retained attorney...",
+      "ocr_text": "[CENTER] **GEHI & ASSOCIATES**\n\n[CENTER] **ATTORNEYS & COUNSELORS AT LAW**\n\n...\n\n[JUSTIFY] I am the retained attorney...",
       "is_active": false
     }
   ]

@@ -55,6 +55,12 @@ backend/
 - New features follow this order: `services/` → `repositories/` → `api/` directly, unless the feature needs session state or HITL pause/resume, in which case it's `services/` → `graph/nodes/` → `graph/main_graph.py` → `api/`. See `docs/architecture.md`.
 - New APIs: one file per feature in `app/api/v1/endpoints/`, registered in `app/api/v1/router.py`
 
+## Working Style
+- Use dedicated tools (Read, Glob, Grep, Edit, etc.) instead of Bash for file/code operations — reserve Bash for things that genuinely need a shell (git, installs, running scripts)
+- Explain things in bullet points, not long paragraphs
+- Keep explanations short and to the point
+- Use diagrams (flow diagrams, ASCII, mermaid) wherever they explain something better than prose
+
 ## Docs
 For specifics, refer to the `docs/` folder:
 

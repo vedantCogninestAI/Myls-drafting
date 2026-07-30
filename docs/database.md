@@ -41,39 +41,39 @@ Model: `app/models/case.py`. Repository: `app/repositories/ingestion.py` — `cr
 
 ### `ingestion_files`
 
-One row per uploaded PDF (not one row per case) — a case that uploads 5 files gets 5 rows sharing the same `case_id`.
+One row per uploaded file — PDF or `.docx` (not one row per case) — a case that uploads 5 files gets 5 rows sharing the same `case_id`.
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | UUID, PK, default `uuid4()` | |
 | `case_id` | Integer, FK → `cases.id`, indexed, not null | |
 | `filename` | String, not null | Original filename. |
-| `doc_type` | String, nullable | `"exhibit"` \| `"filed_doc"` \| `null` when `CLASSIFY_PDF_LLM=false`. |
-| `ocr_text` | Text, nullable | Nullable because OCR can fail independently of the S3 upload — see `error`. |
+| `doc_type` | String, nullable | `"exhibit"` \| `"filed_doc"` \| `"ic_notes"` \| `null` when `CLASSIFY_PDF_LLM=false`. Same three-way classification for both PDF and `.docx` uploads — see `docs/ingestion.md`. |
+| `ocr_text` | Text, nullable | Nullable because text extraction can fail independently of the S3 upload — see `error`. For `.docx` this is `python-docx`-extracted text, not OCR (column name is a naming leftover, kept as-is). |
 | `s3_url` | String, nullable | Nullable for the same reason, in the other direction. |
-| `error` | String, nullable | Set when OCR and/or S3 upload failed for this file. |
+| `error` | String, nullable | Set when text extraction and/or S3 upload failed for this file. |
 | `fields_extracted` | Boolean, not null, default `false` | Set to `true` once a `form_fields` row exists for this file — see the `form_fields` dedup note below. |
 | `created_at` | DateTime (tz) | `server_default=now()` |
 
 Model: `app/models/ingestion.py`. Repository: `app/repositories/ingestion.py` (`create_case()`, `save_files()`).
 
-**Status:** wired — `POST /session/start` creates the `cases` row from a `case_name` (plain DB write, no graph); `POST /api/v1/ingest/{case_name}` resolves the name to its row, then writes one `ingestion_files` row per uploaded PDF (OCR text + classification) after the pipeline runs — a plain endpoint call, not a graph node (see `docs/ingestion.md`). `s3_url` is currently always `null` — S3 upload isn't built yet (deliberately deferred, no bucket configured).
+**Status:** wired — `POST /session/start` creates the `cases` row from a `case_name` (plain DB write, no graph); `POST /api/v1/ingest/{case_name}` resolves the name to its row, then writes one `ingestion_files` row per uploaded file (PDF or `.docx`; OCR/text extraction + classification) after the pipeline runs — a plain endpoint call, not a graph node (see `docs/ingestion.md`). `s3_url` is currently always `null` — S3 upload isn't built yet (deliberately deferred, no bucket configured).
 
 ### `form_fields`
 
-One row per `filed_doc`-classified PDF — the structured field extraction ("Extract the JSON (all fields) of forms" step), distinct from the raw `ocr_text` on `ingestion_files`. Never populated for `exhibit`-classified files (proof documents have no fixed field structure).
+One row per `filed_doc`- or `ic_notes`-classified file (PDF or `.docx`) — the structured field extraction (`FIELD_EXTRACTION_PROMPT` for `filed_doc`, `IC_NOTES_EXTRACTION_PROMPT` for `ic_notes` — different prompts, same table/shape), distinct from the raw `ocr_text` on `ingestion_files`. Never populated for `exhibit`-classified files (proof documents have no fixed field structure).
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | UUID, PK, default `uuid4()` | |
-| `ingestion_file_id` | UUID, FK → `ingestion_files.id`, indexed, not null | Which PDF this extraction came from. |
+| `ingestion_file_id` | UUID, FK → `ingestion_files.id`, indexed, not null | Which file this extraction came from. |
 | `case_id` | Integer, FK → `cases.id`, indexed, not null | Denormalized from `ingestion_files.case_id` so "all fields for this case" doesn't need a join. |
-| `fields` | JSONB, not null | Flat `{label: value}` object — the model's own label text for each key, only fields with an actual filled-in value (blanks/unchecked/N/A are omitted). |
+| `fields` | JSONB, not null | Flat JSON object. For `filed_doc`: `{label: value}` using the form's own printed labels, only fields with an actual filled-in value (blanks/unchecked/N/A omitted). For `ic_notes`: descriptive keys the model chooses itself (there are no printed labels in free-form notes), only facts actually stated. |
 | `created_at` | DateTime (tz) | `server_default=now()` |
 
 Model: `app/models/ingestion.py` (`FormFields`, alongside `IngestionFile`). Repository: `app/repositories/ingestion.py` (`save_form_fields()`).
 
-**Status:** wired and verified end-to-end. After `ingestion_files` rows are saved, the `POST /api/v1/ingest/{case_name}` endpoint calls `IngestionRepository.get_filed_docs(case_id)` — a real `SELECT ... WHERE case_id = ? AND doc_type = 'filed_doc' AND fields_extracted = false`, not an in-memory filter — so it picks up *every* unextracted form for the case, not just files from the current request. This means calling `/ingest` again for the same case re-checks all its forms and extracts any that were added or flagged since the last call, without re-processing ones already done. `save_form_fields()` sets `fields_extracted = true` in the same transaction as inserting the `form_fields` row, so the two never drift out of sync. A file that fails extraction stays `fields_extracted = false` and will be retried on the next `/ingest` call for that case — logged via `field_extraction_partial_failure`, doesn't block the rest of the request. Not surfaced in `/ingest`'s own `POST` response, but fetchable via `GET /api/v1/ingest/{case_name}` — see `docs/ingestion.md`.
+**Status:** wired and verified end-to-end for `filed_doc`; the `ic_notes` path shares the same table/mechanism (text-extraction verified against a real sample file, live LLM extraction not yet run — see `docs/ingestion.md`). After `ingestion_files` rows are saved, `POST /api/v1/ingest/{case_name}` runs two parallel extraction passes: `IngestionRepository.get_filed_docs(case_id)` (`SELECT ... WHERE doc_type = 'filed_doc' AND fields_extracted = false`) and `get_unextracted_ic_notes(case_id)` (same shape, `doc_type = 'ic_notes'`) — both real DB queries, not in-memory filters, so each picks up *every* unextracted file of its type for the case, not just ones from the current request. This means calling `/ingest` again for the same case re-checks all outstanding files of both types and extracts any that were added or previously failed, without re-processing ones already done. `save_form_fields()` sets `fields_extracted = true` in the same transaction as inserting the `form_fields` row (same call, used by both paths), so the two never drift out of sync. A file that fails extraction stays `fields_extracted = false` and will be retried on the next `/ingest` call for that case — logged via `field_extraction_partial_failure` / `ic_notes_extraction_partial_failure`, doesn't block the rest of the request. Not surfaced in `/ingest`'s own `POST` response, but fetchable via `GET /api/v1/ingest/{case_name}` — see `docs/ingestion.md`.
 
 ### `form_fees`
 

@@ -6,7 +6,7 @@ from pydantic import BaseModel
 class DocumentResult(BaseModel):
     name: str
     text: str | None = None
-    type: str | None = None  # "exhibit" or "filed_doc" when OCR is on
+    type: str | None = None  # "exhibit", "filed_doc", or "ic_notes"; None when OCR classification is off
 
 
 class IngestResponse(BaseModel):

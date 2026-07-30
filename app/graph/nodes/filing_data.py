@@ -79,6 +79,7 @@ def _format_address_result(form_number: str, rows: list, match: FormNumberMatch)
 
 async def resolve_filing_data_node(state: DraftingState) -> dict:
     case_id = state["case_id"]
+    revision_count = state.get("draft_revision_count", 0) + 1
     logger.info("resolve_filing_data_node_started", case_id=case_id)
 
     async with AsyncSessionLocal() as session:
@@ -131,6 +132,8 @@ async def resolve_filing_data_node(state: DraftingState) -> dict:
 
         filing_data = await resolve_filing_data(
             case_id=case_id,
+            process_type=process_type,
+            revision_count=revision_count,
             templates=[t.ocr_text for t in templates],
             form_data=form_data,
             get_filing_fee=get_filing_fee,

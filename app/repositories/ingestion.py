@@ -42,6 +42,16 @@ class IngestionRepository:
         )
         return list(result.scalars().all())
 
+    async def get_unextracted_ic_notes(self, case_id: int) -> list[IngestionFile]:
+        result = await self.session.execute(
+            select(IngestionFile).where(
+                IngestionFile.case_id == case_id,
+                IngestionFile.doc_type == "ic_notes",
+                IngestionFile.fields_extracted.is_(False),
+            )
+        )
+        return list(result.scalars().all())
+
     async def save_form_fields(
         self, case_id: int, ingestion_file_id: uuid.UUID, fields: dict
     ) -> FormFields:

@@ -6,12 +6,14 @@ from typing import Awaitable, Callable
 import structlog
 
 from app.prompts import DRAFT_GENERATION_PROMPT
+from app.services.draft.formatting_checks import check_formatting
 from app.services.llm.client import invoke_with_tools, retry_llm_call
 
 logger = structlog.get_logger(__name__)
 _executor = ThreadPoolExecutor()
 
 MAX_TOOL_ITERATIONS = 10
+MAX_FORMATTING_RETRIES = 3
 
 GET_EXHIBIT_TEXT_TOOL = {
     "toolSpec": {
@@ -37,6 +39,33 @@ GET_EXHIBIT_TEXT_TOOL = {
                     },
                 },
                 "required": ["filename", "reason"],
+            }
+        },
+    }
+}
+
+CHECK_DRAFT_FORMATTING_TOOL = {
+    "toolSpec": {
+        "name": "check_draft_formatting",
+        "description": (
+            "Run automated checks on a draft for formatting mistakes: malformed "
+            "alignment labels, leaked reference-template mentions, stray markdown "
+            "code fences, and file names not in this case's Available Files. Call "
+            "this with your complete draft text before giving your final answer; "
+            "if it reports issues, fix them and call it again."
+        ),
+        "inputSchema": {
+            "json": {
+                "type": "object",
+                "properties": {
+                    "draft_text": {
+                        "type": "string",
+                        "description": (
+                            "The complete draft text to check, exactly as you intend to output it."
+                        ),
+                    }
+                },
+                "required": ["draft_text"],
             }
         },
     }
@@ -76,6 +105,8 @@ def _build_initial_message(
 
 async def generate_draft(
     case_id: int,
+    process_type: str,
+    revision_count: int,
     templates: list[str],
     form_data: dict[str, dict],
     available_files: list[dict],
@@ -85,7 +116,7 @@ async def generate_draft(
     previous_draft: str | None = None,
     feedback: str | None = None,
 ) -> str:
-    log = logger.bind(case_id=case_id)
+    log = logger.bind(case_id=case_id, process_type=process_type, revision_count=revision_count)
     loop = asyncio.get_event_loop()
     messages = [
         {
@@ -105,7 +136,8 @@ async def generate_draft(
             ],
         }
     ]
-    tools = [GET_EXHIBIT_TEXT_TOOL]
+    tools = [GET_EXHIBIT_TEXT_TOOL, CHECK_DRAFT_FORMATTING_TOOL]
+    formatting_retries = 0
 
     log.info(
         "draft_generation_started",
@@ -132,12 +164,53 @@ async def generate_draft(
                 log.warning(
                     "draft_generation_empty_response", iteration=iteration, stop_reason=stop_reason
                 )
-            log.info(
-                "draft_generation_done",
-                iterations=iteration,
-                draft_length=len(final_text),
+                log.info("draft_generation_done", iterations=iteration, draft_length=len(final_text))
+                return final_text
+
+            issues = check_formatting(final_text, available_files)
+            if not issues:
+                log.info(
+                    "draft_formatting_final_check_passed",
+                    iteration=iteration,
+                    formatting_retries=formatting_retries,
+                )
+                log.info("draft_generation_done", iterations=iteration, draft_length=len(final_text))
+                return final_text
+
+            if formatting_retries >= MAX_FORMATTING_RETRIES:
+                log.warning(
+                    "draft_formatting_retry_cap_reached",
+                    iteration=iteration,
+                    max_formatting_retries=MAX_FORMATTING_RETRIES,
+                    issues=issues,
+                )
+                log.info("draft_generation_done", iterations=iteration, draft_length=len(final_text))
+                return final_text
+
+            formatting_retries += 1
+            log.warning(
+                "draft_formatting_final_check_failed",
+                iteration=iteration,
+                formatting_retries=formatting_retries,
+                issue_count=len(issues),
+                issues=issues,
             )
-            return final_text
+            messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "text": (
+                                "Your draft failed automated formatting checks and was not "
+                                "accepted as final:\n- " + "\n- ".join(issues) + "\n\n"
+                                "Fix these issues, call check_draft_formatting again to "
+                                "confirm, then give your final answer."
+                            )
+                        }
+                    ],
+                }
+            )
+            continue
 
         tool_use_blocks = [
             block["toolUse"] for block in assistant_message["content"] if "toolUse" in block
@@ -145,28 +218,44 @@ async def generate_draft(
         tool_result_content = []
 
         for tool_use_block in tool_use_blocks:
-            filename = tool_use_block["input"]["filename"]
-            reason = tool_use_block["input"].get("reason")
+            tool_name = tool_use_block["name"]
+            tool_input = tool_use_block["input"]
             tool_use_id = tool_use_block["toolUseId"]
 
-            log.info(
-                "draft_generation_tool_call",
-                iteration=iteration,
-                filename=filename,
-                reason=reason,
-            )
-            exhibit_text = await get_exhibit_text(filename)
+            if tool_name == "get_exhibit_text":
+                filename = tool_input["filename"]
+                reason = tool_input.get("reason")
+                log.info(
+                    "draft_generation_tool_call",
+                    iteration=iteration,
+                    filename=filename,
+                    reason=reason,
+                )
+                exhibit_text = await get_exhibit_text(filename)
+                result_text = exhibit_text or f"No file found with filename '{filename}'."
+            elif tool_name == "check_draft_formatting":
+                draft_text = tool_input["draft_text"]
+                issues = check_formatting(draft_text, available_files)
+                log.info(
+                    "draft_formatting_tool_call",
+                    iteration=iteration,
+                    issue_count=len(issues),
+                    issues=issues,
+                )
+                result_text = (
+                    "All checks passed. You may give this exact draft as your final answer."
+                    if not issues
+                    else "Issues found:\n- " + "\n- ".join(issues)
+                )
+            else:
+                log.warning("draft_generation_unknown_tool", iteration=iteration, tool_name=tool_name)
+                result_text = f"Unknown tool '{tool_name}'."
 
             tool_result_content.append(
                 {
                     "toolResult": {
                         "toolUseId": tool_use_id,
-                        "content": [
-                            {
-                                "text": exhibit_text
-                                or f"No file found with filename '{filename}'."
-                            }
-                        ],
+                        "content": [{"text": result_text}],
                     }
                 }
             )

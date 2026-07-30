@@ -88,6 +88,8 @@ async def generate_draft_node(state: DraftingState) -> dict:
 
         draft_text = await generate_draft(
             case_id=case_id,
+            process_type=process_type,
+            revision_count=revision_count,
             templates=[t.ocr_text for t in templates],
             form_data=form_data,
             available_files=available_files,

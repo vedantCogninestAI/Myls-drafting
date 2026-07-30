@@ -4,9 +4,10 @@ DOCUMENT_CLASSIFICATION_PROMPT = """You are classifying a legal document based o
 
 Classify it as exactly one of:
 - 'exhibit': a proof document provided by the client as evidence (e.g. birth certificate, passport, photograph, bank statement, tax return, letter)
-- 'filed_doc': a form or application filled out by the client for a legal process
+- 'filed_doc': a form or application filled out by the client for a legal process, with fixed fields/labels to be filled in
+- 'ic_notes': free-form intake/case notes written by attorney or staff — not a form, no fixed fields. Typically covers client and case demographics (names, dates of birth, addresses, relationships), the underlying issue or condition, and/or drafting guidance describing what the petition or document being prepared should contain. Often a mix of narrative client-interview notes and a structured outline of required content.
 
-Respond with exactly one word: either 'exhibit' or 'filed_doc'. No explanation, no punctuation."""
+Respond with exactly one word: either 'exhibit', 'filed_doc', or 'ic_notes'. No explanation, no punctuation."""
 
 FIELD_EXTRACTION_PROMPT = """You are extracting structured data from the OCR text of a legal form.
 
@@ -19,6 +20,19 @@ Rules:
 - Output ONLY the JSON object — no commentary, no markdown code fences, no explanation.
 
 The OCR text to extract fields from follows below:"""
+
+IC_NOTES_EXTRACTION_PROMPT = """You are extracting structured data from a legal intake/case notes document (sometimes called "IC Notes"). Unlike a filled-in form, this is free-form prose written by attorney or staff — client interview notes, case facts, and/or petition-drafting guidance — with no fixed field labels.
+
+Read the text below and extract every concrete fact it states into a flat JSON object, using clear, descriptive keys you choose yourself (e.g. "client_name", "aip_date_of_birth", "aip_address", "diagnosis", "requested_powers", "interested_parties").
+
+Rules:
+- Only include facts actually stated in the text. Do not infer, guess, or fill in anything not explicitly present.
+- Use short, unambiguous, descriptive keys — prefer full words over abbreviations unless the text itself uses one consistently.
+- If the text lists multiple items of the same kind (e.g. several interested parties, several requested powers), use a JSON array for that key rather than inventing separate numbered keys.
+- If the text mixes case facts with procedural/drafting guidance (e.g. "what the petition must include"), extract facts from both — guidance sections often restate or add case-specific facts even while describing document structure.
+- Output ONLY the JSON object — no commentary, no markdown code fences, no explanation.
+
+The text to extract from follows below:"""
 
 FILING_DATA_RESOLUTION_PROMPT = """You are a filing-data resolution agent in a legal drafting pipeline. Your only job is to decide whether the document about to be drafted needs a filing fee and/or a filing address, and if so, fetch the real value. You do not write any part of the document yourself, and nothing you write in your final answer is used — only the tool calls you make and their results matter.
 
@@ -57,11 +71,15 @@ Copy from the templates: section order, headings, paragraph structure, alignment
 
 Never copy from the templates: names, dates, amounts, addresses, form names, exhibit letters, exhibit counts, or any other fact. A template listing five forms and exhibits A through P tells you nothing about this case.
 
-Alignment is marked with a leading bracket label: [CENTER], [RIGHT], or [JUSTIFY]. An unmarked line is left-aligned. Use these same labels in your draft wherever the templates show that alignment for equivalent content (a letterhead is usually [CENTER], a body paragraph often [JUSTIFY]).
+Alignment is marked with a leading bracket label: [CENTER], [RIGHT], or [JUSTIFY]. An unmarked line is left-aligned. Use these same labels in your draft wherever the templates show that alignment for equivalent content (a letterhead is usually [CENTER], a body paragraph often [JUSTIFY]). This label must be the very first thing on the line, never wrapped in bold/italic markers itself.
+
+Bold and italic text is marked with standard markdown: **bold**, *italic*, ***bold and italic***. Reproduce this the same way from templates for equivalent content — a firm's letterhead name/address block is often bold, for example.
 
 A template's structure includes how many named parties it shows in things like the caption block — but this case is not required to match that count. If Form Data describes more parties than any template shows (e.g. several respondents, each with their own filed form of the same type), adapt the structure to name every one of them — extend the caption block to list them all, and switch to plural phrasing ("the Respondents", "their hearing") wherever the case has more than one party. Never drop a party Form Data provides, and never gap a party's identity just because a template happened to show fewer parties than this case has. A template showing one party while Form Data shows several is not a disagreement between sources — it is simply a template that models the structure for a smaller version of this case; adapt it, don't gap it.
 
 For example, if a template's caption shows one line like "NAME    :        FILE NO: xxx" between the block's opening and closing borders, and this case has three parties, add two more lines in that same position, one per party, inside that same single block, stacked directly one after another with no other line between them. Never repeat the block's borders or its fixed structural labels (whatever they are for that document type — e.g. "In the matter of", "Respondent", "In Removal Proceedings") once per party; those lines appear exactly once regardless of party count. Reproduce every party's full name exactly as Form Data gives it — never shorten, abbreviate, or append an extra initial or letter to a name.
+
+"File No" / "File Number" in a caption block refers to the same identifier as "A-Number" (also written "A#", "Alien Number", or "Alien Registration Number") in Form Data — the same value, just a different label depending on which document printed it. When filling a "File No" slot, look for whichever of these labels Form Data actually uses.
 
 Some templates use a repeating bracket character (")" or ":") down the margin of a caption block, including lines that are nothing but that one character, to give the appearance of a continuous vertical line. Never reproduce one of those lines as-is — a line containing only a bracket character and nothing else. Instead, attach the bracket directly to the end of the nearest real content line on the same line. Every line in your caption block must contain real content; none may consist solely of a bracket character. This applies to every line you write, not only ones copied directly from the template — including any line you insert yourself when stacking multiple items in sequence (such as, but not limited to, multiple parties). Never insert a bracket-only line as a separator between stacked items; attach the bracket to each one directly instead.
 
@@ -93,6 +111,10 @@ If two sources disagree, use [GAP: ...] and name the conflict rather than pickin
 # Revisions
 
 If the input has "Previous Draft" and "Attorney Feedback" sections, revise the previous draft to address that feedback and change nothing else. Do not restart from scratch unless the feedback asks for it.
+
+# Before you finalize
+
+Call check_draft_formatting with your complete draft text before giving your final answer. If it reports any issues, fix them in the draft and call it again — repeat until it reports none. Only give your final answer once it passes.
 
 # Output
 

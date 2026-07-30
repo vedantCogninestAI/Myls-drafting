@@ -5,7 +5,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_db
 from app.repositories.ingestion import IngestionRepository
 from app.schemas.ingestion import CaseIngestionResponse, DocumentResult, IngestedFile, IngestResponse
-from app.services.ingestion.pipeline import extract_form_fields, run_ingestion_pipeline
+from app.services.ingestion.docx_pipeline import run_docx_pipeline
+from app.services.ingestion.pipeline import (
+    extract_form_fields,
+    extract_ic_notes_fields,
+    run_ingestion_pipeline,
+)
 
 logger = structlog.get_logger(__name__)
 router = APIRouter()
@@ -54,16 +59,25 @@ async def ingest_documents(
         "ingest_request_received", case_id=case_id, case_name=case_name, filenames=list(file_data.keys())
     )
 
-    results, failed = await run_ingestion_pipeline(file_data)
+    pdf_data = {name: data for name, data in file_data.items() if not name.lower().endswith(".docx")}
+    docx_data = {name: data for name, data in file_data.items() if name.lower().endswith(".docx")}
+
+    pdf_results, pdf_failed = await run_ingestion_pipeline(pdf_data) if pdf_data else ({}, {})
+    docx_results, docx_failed = await run_docx_pipeline(docx_data) if docx_data else ({}, {})
+    results = {**pdf_results, **docx_results}
+    failed = {**pdf_failed, **docx_failed}
 
     exhibit_texts: dict[str, str] = {}
     filed_doc_texts: dict[str, str] = {}
+    ic_notes_texts: dict[str, str] = {}
     unclassified_texts: dict[str, str] = {}
     for filename, doc in results.items():
         if doc["type"] == "exhibit":
             exhibit_texts[filename] = doc["text"]
         elif doc["type"] == "filed_doc":
             filed_doc_texts[filename] = doc["text"]
+        elif doc["type"] == "ic_notes":
+            ic_notes_texts[filename] = doc["text"]
         else:
             unclassified_texts[filename] = doc["text"]
 
@@ -88,6 +102,20 @@ async def ingest_documents(
             await repository.save_form_fields(case_id, record.id, fields)
         if extraction_failed:
             logger.warning("field_extraction_partial_failure", case_id=case_id, failed=extraction_failed)
+
+    unextracted_ic_notes = await repository.get_unextracted_ic_notes(case_id)
+    ic_notes_saved = {record.filename: record for record in unextracted_ic_notes if record.ocr_text}
+    if ic_notes_saved:
+        ic_extracted, ic_extraction_failed = await extract_ic_notes_fields(
+            {filename: record.ocr_text for filename, record in ic_notes_saved.items()}
+        )
+        for filename, fields in ic_extracted.items():
+            record = ic_notes_saved[filename]
+            await repository.save_form_fields(case_id, record.id, fields)
+        if ic_extraction_failed:
+            logger.warning(
+                "ic_notes_extraction_partial_failure", case_id=case_id, failed=ic_extraction_failed
+            )
     logger.info("ingestion_db_save_done", case_id=case_id, saved_count=len(saved))
 
     all_results: dict[str, DocumentResult] = {}
@@ -95,6 +123,8 @@ async def ingest_documents(
         all_results[filename] = DocumentResult(name=filename, text=text, type="exhibit")
     for filename, text in filed_doc_texts.items():
         all_results[filename] = DocumentResult(name=filename, text=text, type="filed_doc")
+    for filename, text in ic_notes_texts.items():
+        all_results[filename] = DocumentResult(name=filename, text=text, type="ic_notes")
     for filename, text in unclassified_texts.items():
         all_results[filename] = DocumentResult(name=filename, text=text, type=None)
 
@@ -103,6 +133,7 @@ async def ingest_documents(
         case_id=case_id,
         exhibit_count=len(exhibit_texts),
         filed_doc_count=len(filed_doc_texts),
+        ic_notes_count=len(ic_notes_texts),
         unclassified_count=len(unclassified_texts),
         failed_count=len(failed),
     )

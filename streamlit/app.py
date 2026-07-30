@@ -7,12 +7,19 @@ Run with:
 
 Requires the backend running separately (uvicorn app.main:app --reload).
 """
+import io
 import logging
+from html import escape
 from urllib.parse import quote
 
 import requests
 import streamlit as st
 from config import settings
+from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.ns import qn
+from docx.table import Table
+from docx.text.paragraph import Paragraph
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger("streamlit_app")
@@ -94,6 +101,96 @@ def show_loading_overlay(message: str):
     return placeholder
 
 
+_ALIGNMENT_CSS = {
+    WD_ALIGN_PARAGRAPH.CENTER: "center",
+    WD_ALIGN_PARAGRAPH.RIGHT: "right",
+    WD_ALIGN_PARAGRAPH.JUSTIFY: "justify",
+}
+
+
+def _iter_block_items(document: Document):
+    """Yield paragraphs and tables from the document body, in document order."""
+    body = document.element.body
+    for child in body.iterchildren():
+        if child.tag == qn("w:p"):
+            yield Paragraph(child, document)
+        elif child.tag == qn("w:tbl"):
+            yield Table(child, document)
+
+
+def _render_paragraph_html(paragraph: Paragraph) -> str:
+    text_align = _ALIGNMENT_CSS.get(paragraph.alignment, "left")
+    if not paragraph.text.strip():
+        return "<p style='margin:0 0 10px 0;'>&nbsp;</p>"
+    runs_html = []
+    for run in paragraph.runs:
+        run_text = escape(run.text).replace("\n", "<br>")
+        if run.bold:
+            run_text = f"<strong>{run_text}</strong>"
+        if run.italic:
+            run_text = f"<em>{run_text}</em>"
+        if run.underline:
+            run_text = f"<u>{run_text}</u>"
+        runs_html.append(run_text)
+    content = "".join(runs_html) or escape(paragraph.text)
+    return f"<p style='margin:0 0 10px 0; text-align:{text_align};'>{content}</p>"
+
+
+def _render_table_html(table: Table) -> str:
+    rows_html = []
+    for row in table.rows:
+        cells_html = "".join(
+            f"<td style='border:1px solid #999; padding:6px 10px; vertical-align:top;'>"
+            f"{escape(cell.text)}</td>"
+            for cell in row.cells
+        )
+        rows_html.append(f"<tr>{cells_html}</tr>")
+    return (
+        "<table style='border-collapse:collapse; width:100%; margin:10px 0;'>"
+        + "".join(rows_html)
+        + "</table>"
+    )
+
+
+def render_docx_preview(data: bytes) -> None:
+    """Render a generated .docx as a styled 'page' inline, mirroring its
+    paragraph alignment and table layout (the only structures the drafting
+    agent's docx generator produces)."""
+    document = Document(io.BytesIO(data))
+    body_html = []
+    for block in _iter_block_items(document):
+        if isinstance(block, Paragraph):
+            body_html.append(_render_paragraph_html(block))
+        elif isinstance(block, Table):
+            body_html.append(_render_table_html(block))
+    page_html = f"""
+    <div style="
+        background:#ffffff; color:#1a1a1a; font-family:'Georgia','Times New Roman',serif;
+        font-size:15px; line-height:1.5; padding:48px 56px; max-width:850px;
+        margin:12px auto; border-radius:4px; box-shadow:0 2px 10px rgba(0,0,0,0.25);
+    ">
+        {"".join(body_html)}
+    </div>
+    """
+    st.markdown(page_html, unsafe_allow_html=True)
+
+
+def reset_tab(*keys: str, prefixes: tuple[str, ...] = ()) -> None:
+    for key in keys:
+        st.session_state.pop(key, None)
+    if prefixes:
+        for key in [k for k in st.session_state if k.startswith(prefixes)]:
+            st.session_state.pop(key, None)
+    st.rerun()
+
+
+def tab_reset_button(key: str, *state_keys: str, prefixes: tuple[str, ...] = ()) -> None:
+    _, reset_col = st.columns([8, 1])
+    with reset_col:
+        if st.button("🔄 Reset", key=key, use_container_width=True):
+            reset_tab(*state_keys, prefixes=prefixes)
+
+
 def refresh_cases() -> None:
     resp = api_get("/session/cases")
     if resp is not None and resp.ok:
@@ -111,10 +208,13 @@ def refresh_process_types() -> None:
 
 
 # Auto-load the dropdown sources once per session, so they aren't empty
-# before the user visits the Cases/Templates tabs first.
-if "cases" not in st.session_state:
+# before the user visits the Cases/Templates tabs first. Gated on a
+# separate one-time sentinel (not the presence of "cases"/"process_types"
+# themselves) so an explicit tab Reset — which clears those two keys —
+# actually shows blank instead of being silently undone on the next rerun.
+if "_startup_loaded" not in st.session_state:
+    st.session_state["_startup_loaded"] = True
     refresh_cases()
-if "process_types" not in st.session_state:
     refresh_process_types()
 
 
@@ -217,29 +317,16 @@ def show_case_ingestion(data: dict) -> None:
                 st.json(f["fields"])
 
 
-st.sidebar.subheader("Fee / Address Scraping")
-st.sidebar.caption("Independent of case flow — can be run anytime.")
-if st.sidebar.button("Trigger fee scrape"):
-    resp = api_post("/fees/scrape")
-    if resp is not None and resp.ok:
-        st.sidebar.success(resp.json())
-    else:
-        show_error(resp)
-if st.sidebar.button("Trigger address scrape"):
-    resp = api_post("/addresses/scrape")
-    if resp is not None and resp.ok:
-        st.sidebar.success(resp.json())
-    else:
-        show_error(resp)
-
 st.title("Drafting Backend — Quick Test UI")
 
-tab_cases, tab_templates, tab_ingest, tab_draft, tab_scrape = st.tabs(
-    ["Cases", "Templates", "Ingestion", "Draft Generation", "Fee / Address Data"]
+tab_cases, tab_ingest, tab_draft, tab_scrape, tab_templates = st.tabs(
+    ["Cases", "Ingestion", "Draft Generation", "Fee / Address Data", "Templates"]
 )
 
 # ---- Cases ----
 with tab_cases:
+    tab_reset_button("reset_cases_tab", "cases")
+
     st.header("Create a Case")
     with st.form("create_case_form"):
         case_name = st.text_input("Case name")
@@ -267,6 +354,8 @@ with tab_cases:
 
 # ---- Templates ----
 with tab_templates:
+    tab_reset_button("reset_templates_tab", "process_types", "view_pt")
+
     st.header("Upload Templates")
     with st.form("upload_templates_form"):
         process_type = st.text_input("Process type (new or existing)")
@@ -288,15 +377,6 @@ with tab_templates:
             else:
                 show_error(resp)
 
-    st.header("Existing Process Types")
-    if st.button("Refresh process types"):
-        refresh_process_types()
-    process_types = st.session_state.get("process_types", [])
-    if process_types:
-        st.write(process_types)
-    else:
-        st.caption("No process types loaded yet — click Refresh.")
-
     st.header("View Stored Templates")
     view_pt = process_type_select("process_type to view", key="view_pt")
     if st.button("Fetch templates"):
@@ -311,11 +391,16 @@ with tab_templates:
 
 # ---- Ingestion ----
 with tab_ingest:
+    tab_reset_button("reset_ingest_tab", "ingest_case", "ingest_files", "view_case")
+
     st.header("Ingest Documents")
     with st.form("ingest_form"):
         case_name_ingest = case_select("Case name", key="ingest_case")
         ingest_files = st.file_uploader(
-            "Documents (PDF)", type=["pdf"], accept_multiple_files=True, key="ingest_files"
+            "Documents (PDF, or IC Notes as .docx)",
+            type=["pdf", "docx"],
+            accept_multiple_files=True,
+            key="ingest_files",
         )
         submitted = st.form_submit_button("Ingest")
     if submitted:
@@ -345,6 +430,12 @@ with tab_ingest:
 
 # ---- Draft Generation ----
 with tab_draft:
+    tab_reset_button(
+        "reset_draft_tab",
+        "draft_threads", "draft_case", "draft_process_type",
+        prefixes=("capped_",),
+    )
+
     st.header("Draft Generation & Review")
     d_case = case_select("Case name", key="draft_case")
     d_process_type = process_type_select("Process type", key="draft_process_type")
@@ -367,6 +458,8 @@ with tab_draft:
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     key=f"dl_{thread_key}_{i}",
                 )
+                with st.expander(f"Preview draft v{i}", expanded=(i == len(rounds))):
+                    render_docx_preview(rnd["draft_bytes"])
             if rnd["decision"] is not None:
                 with st.chat_message("user"):
                     if rnd["decision"] == "Approve":
@@ -432,21 +525,46 @@ with tab_draft:
 
 # ---- Fee / Address Data ----
 with tab_scrape:
-    st.caption("Use the sidebar to trigger a scrape — this tab is just for viewing results.")
+    tab_reset_button("reset_scrape_tab", "fees_data", "addresses_data")
+
+    st.caption("Scraping is independent of case flow — can be run anytime.")
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("Fees")
-        if st.button("List fees"):
+        if st.button("Trigger fee scrape", key="trigger_fee_scrape", use_container_width=True):
+            resp = api_post("/fees/scrape")
+            if resp is not None and resp.ok:
+                st.success(resp.json())
+            else:
+                show_error(resp)
+        if st.button("View fees", key="view_fees", use_container_width=True):
             resp = api_get("/fees")
             if resp is not None and resp.ok:
-                st.dataframe(resp.json())
+                st.session_state["fees_data"] = resp.json()
+                st.session_state.pop("addresses_data", None)
             else:
                 show_error(resp)
     with col2:
         st.subheader("Addresses")
-        if st.button("List addresses"):
-            resp = api_get("/addresses")
+        if st.button("Trigger address scrape", key="trigger_address_scrape", use_container_width=True):
+            resp = api_post("/addresses/scrape")
             if resp is not None and resp.ok:
-                st.dataframe(resp.json())
+                st.success(resp.json())
             else:
                 show_error(resp)
+        if st.button("View addresses", key="view_addresses", use_container_width=True):
+            resp = api_get("/addresses")
+            if resp is not None and resp.ok:
+                st.session_state["addresses_data"] = resp.json()
+                st.session_state.pop("fees_data", None)
+            else:
+                show_error(resp)
+
+    if "fees_data" in st.session_state:
+        st.divider()
+        st.subheader("Fees")
+        st.dataframe(st.session_state["fees_data"], use_container_width=True)
+    elif "addresses_data" in st.session_state:
+        st.divider()
+        st.subheader("Addresses")
+        st.dataframe(st.session_state["addresses_data"], use_container_width=True)
