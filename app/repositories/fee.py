@@ -1,9 +1,15 @@
+import hashlib
+
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.fee import FormFee
 from app.repositories.fuzzy_match import FUZZY_MATCH_THRESHOLD, FormNumberMatch, best_form_number_match
+
+
+def _hash_filing_category(filing_category: str) -> str:
+    return hashlib.sha256(filing_category.encode()).hexdigest()
 
 
 class FeeRepository:
@@ -14,7 +20,10 @@ class FeeRepository:
         if not rows:
             return 0
 
-        deduped = {(row["form_number"], row["filing_category"]): row for row in rows}
+        for row in rows:
+            row["filing_category_hash"] = _hash_filing_category(row["filing_category"])
+
+        deduped = {(row["form_number"], row["filing_category_hash"]): row for row in rows}
         rows = list(deduped.values())
 
         stmt = insert(FormFee).values(rows)
