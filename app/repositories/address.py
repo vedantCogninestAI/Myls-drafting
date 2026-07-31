@@ -1,4 +1,4 @@
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,6 +36,10 @@ class AddressRepository:
         await self.session.execute(stmt)
         await self.session.commit()
         return len(rows)
+
+    async def clear_all(self) -> None:
+        await self.session.execute(delete(FormAddress))
+        await self.session.commit()
 
     async def list_all(self) -> list[FormAddress]:
         result = await self.session.execute(

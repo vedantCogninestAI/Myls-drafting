@@ -8,6 +8,7 @@ logger = structlog.get_logger(__name__)
 
 async def run_address_scrape(repository: AddressRepository) -> int:
     total_upserted = 0
+    await repository.clear_all()
 
     async def on_batch(batch_items: list[dict]) -> None:
         nonlocal total_upserted

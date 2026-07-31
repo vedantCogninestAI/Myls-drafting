@@ -19,7 +19,7 @@ class FormFee(Base):
     form_title: Mapped[str] = mapped_column(String(500), nullable=False)
     form_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
 
-    filing_category: Mapped[str] = mapped_column(String(100), nullable=False)
+    filing_category: Mapped[str] = mapped_column(String(500), nullable=False)
     paper_fee: Mapped[float | None] = mapped_column(Float, nullable=True)
     online_fee: Mapped[float | None] = mapped_column(Float, nullable=True)
     fee_details: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)

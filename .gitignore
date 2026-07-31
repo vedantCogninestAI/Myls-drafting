@@ -18,3 +18,7 @@ outputs/
 reset_db.py
 reset_scraped_data.py
 build_database_url.ipynb
+
+# Local-only docs and Claude instructions — never pushed
+docs/
+CLAUDE.md
