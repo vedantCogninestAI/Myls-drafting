@@ -26,9 +26,7 @@ logger = logging.getLogger("streamlit_app")
 
 st.set_page_config(page_title="Drafting Backend Tester", layout="wide")
 
-API_BASE = st.sidebar.text_input("API base URL", value=settings.API_BASE_URL)
-
-st.sidebar.divider()
+API_BASE = settings.API_BASE_URL
 
 
 def _request(method: str, path: str, **kwargs) -> requests.Response | None:
@@ -58,7 +56,7 @@ def api_post(path: str, **kwargs) -> requests.Response | None:
 
 def show_error(resp: requests.Response | None) -> None:
     if resp is None:
-        st.error("Could not reach the backend. Check the API base URL (sidebar) and that the server is running.")
+        st.error("Could not reach the backend. Check the API base URL (streamlit/.env) and that the server is running.")
         return
     try:
         detail = resp.json().get("detail", resp.text)

@@ -1,11 +1,12 @@
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from langgraph.types import Command
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.db import get_db
+from app.graph.checkpointer import get_graph
 from app.repositories.ingestion import IngestionRepository
 from app.schemas.draft import DraftApproveRequest
 from app.services.draft.word_formatter import draft_to_docx_bytes
@@ -18,7 +19,10 @@ DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingm
 
 @router.post("/{case_name}/{process_type}/generate")
 async def generate_draft_endpoint(
-    case_name: str, process_type: str, request: Request, session: AsyncSession = Depends(get_db)
+    case_name: str,
+    process_type: str,
+    session: AsyncSession = Depends(get_db),
+    graph=Depends(get_graph),
 ) -> Response:
     case = await IngestionRepository(session).get_case_by_name(case_name)
     if case is None:
@@ -26,7 +30,6 @@ async def generate_draft_endpoint(
     case_id = case.id
 
     thread_id = f"{case_id}:{process_type}"
-    graph = request.app.state.graph
     logger.info(
         "draft_generate_request_received", case_id=case_id, case_name=case_name, process_type=process_type
     )
@@ -65,8 +68,8 @@ async def approve_draft_endpoint(
     case_name: str,
     process_type: str,
     body: DraftApproveRequest,
-    request: Request,
     session: AsyncSession = Depends(get_db),
+    graph=Depends(get_graph),
 ) -> Response:
     case = await IngestionRepository(session).get_case_by_name(case_name)
     if case is None:
@@ -74,7 +77,6 @@ async def approve_draft_endpoint(
     case_id = case.id
 
     thread_id = f"{case_id}:{process_type}"
-    graph = request.app.state.graph
     config = {"configurable": {"thread_id": thread_id}}
     logger.info(
         "draft_approve_request_received",
