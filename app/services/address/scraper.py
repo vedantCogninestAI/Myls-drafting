@@ -4,9 +4,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from urllib.parse import urljoin
 
-import requests
 import structlog
 from bs4 import BeautifulSoup
+from firecrawl import AsyncFirecrawlApp
 
 from app.config import settings
 
@@ -21,12 +21,6 @@ _COURIER_LABEL_RE = re.compile(r"FedEx,\s*UPS,\s*and\s*DHL\s*deliveries:", re.IG
 _FORM_HEADING_RE = re.compile(r"^([A-Z0-9]+(?:-[A-Z0-9]+)*(?:/[A-Z0-9-]+)?)\s*\|\s*(.+)$")
 _FILING_ADDRESS_LINK_RE = re.compile(r"filing\s+address(es)?", re.IGNORECASE)
 
-_REQUEST_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    )
-}
 _ALL_FORMS_URL = f"{settings.USCIS_BASE_URL}/forms/all-forms"
 
 
@@ -36,10 +30,8 @@ class FormEntry:
     form_name: str
 
 
-def new_client() -> requests.Session:
-    session = requests.Session()
-    session.headers.update(_REQUEST_HEADERS)
-    return session
+def new_client() -> AsyncFirecrawlApp:
+    return AsyncFirecrawlApp(api_key=settings.FIRECRAWL_API_KEY)
 
 
 def _parse_all_forms_page(html: str) -> list[FormEntry]:
@@ -64,21 +56,14 @@ def _parse_all_forms_page(html: str) -> list[FormEntry]:
     return entries
 
 
-def _fetch_sync(client: requests.Session, url: str) -> str:
-    response = client.get(url, timeout=settings.FEE_SCRAPE_TIMEOUT)
-    if response.status_code == 404:
-        return ""
-    response.raise_for_status()
-    return response.text
-
-
-async def _fetch(client: requests.Session, url: str) -> str:
-    html = await asyncio.to_thread(_fetch_sync, client, url)
+async def _fetch(client: AsyncFirecrawlApp, url: str) -> str:
+    result = await client.scrape_url(url, formats=["html"])
+    html = result.html or ""
     logger.info("uscis_fetch", url=url, html_length=len(html))
     return html
 
 
-async def fetch_all_forms_list(client: requests.Session) -> list[FormEntry]:
+async def fetch_all_forms_list(client: AsyncFirecrawlApp) -> list[FormEntry]:
     html = await _fetch(client, _ALL_FORMS_URL)
     return _parse_all_forms_page(html)
 
@@ -188,7 +173,7 @@ def _find_address_page_url(html: str, base_url: str) -> str | None:
 
 
 async def _fetch_form_addresses(
-    client: requests.Session, entry: FormEntry
+    client: AsyncFirecrawlApp, entry: FormEntry
 ) -> tuple[list[dict], str | None]:
     slug = entry.form_number.lower().replace(" ", "-").replace("/", "-")
     form_page_url = f"{settings.USCIS_BASE_URL}/{slug}"
@@ -228,7 +213,6 @@ async def scrape_all_addresses(
         entry_count=len(entries),
         concurrency=batch_size,
         batch_delay=settings.FEE_SCRAPE_BATCH_DELAY,
-        timeout=settings.FEE_SCRAPE_TIMEOUT,
     )
     address_items: list[dict] = []
     for i in range(0, len(entries), batch_size):

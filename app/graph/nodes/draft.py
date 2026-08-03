@@ -6,6 +6,7 @@ from app.core.db import AsyncSessionLocal
 from app.graph.state import DraftingState
 from app.repositories.ingestion import IngestionRepository
 from app.repositories.template import TemplateRepository
+from app.services.draft.patch import try_patch_draft
 from app.services.draft.pipeline import generate_draft
 
 logger = structlog.get_logger(__name__)
@@ -26,11 +27,12 @@ async def generate_draft_node(state: DraftingState) -> dict:
     feedback = state.get("draft_feedback")
     filing_fee_data = state.get("filing_fee_data")
     filing_address_data = state.get("filing_address_data")
+    is_revision = bool(previous_draft and feedback)
     logger.info(
         "generate_draft_node_started",
         case_id=case_id,
         revision_count=revision_count,
-        is_revision=bool(previous_draft and feedback),
+        is_revision=is_revision,
         has_filing_fee_data=filing_fee_data is not None,
         has_filing_address_data=filing_address_data is not None,
     )
@@ -86,19 +88,33 @@ async def generate_draft_node(state: DraftingState) -> dict:
             )
             return file.ocr_text
 
-        draft_text = await generate_draft(
-            case_id=case_id,
-            process_type=process_type,
-            revision_count=revision_count,
-            templates=[t.ocr_text for t in templates],
-            form_data=form_data,
-            available_files=available_files,
-            get_exhibit_text=get_exhibit_text,
-            filing_fee_data=filing_fee_data,
-            filing_address_data=filing_address_data,
-            previous_draft=previous_draft,
-            feedback=feedback,
-        )
+        draft_text = None
+        used_patch = False
+        if is_revision:
+            draft_text = await try_patch_draft(
+                case_id=case_id,
+                process_type=process_type,
+                revision_count=revision_count,
+                previous_draft=previous_draft,
+                feedback=feedback,
+                available_files=available_files,
+            )
+            used_patch = draft_text is not None
+
+        if draft_text is None:
+            draft_text = await generate_draft(
+                case_id=case_id,
+                process_type=process_type,
+                revision_count=revision_count,
+                templates=[t.ocr_text for t in templates],
+                form_data=form_data,
+                available_files=available_files,
+                get_exhibit_text=get_exhibit_text,
+                filing_fee_data=filing_fee_data,
+                filing_address_data=filing_address_data,
+                previous_draft=previous_draft,
+                feedback=feedback,
+            )
 
     logger.info(
         "generate_draft_node_done",
@@ -106,6 +122,7 @@ async def generate_draft_node(state: DraftingState) -> dict:
         revision_count=revision_count,
         template_count=len(templates),
         draft_length=len(draft_text),
+        used_patch=used_patch,
     )
     return {
         "draft": draft_text,
