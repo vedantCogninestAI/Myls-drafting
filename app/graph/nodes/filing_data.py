@@ -1,91 +1,52 @@
-import json
-
 import structlog
 
 from app.core.db import AsyncSessionLocal
 from app.graph.state import DraftingState
+from app.models.address import FormAddress
+from app.models.fee import FormFee
 from app.repositories.address import AddressRepository
 from app.repositories.fee import FeeRepository
-from app.repositories.fuzzy_match import FUZZY_MATCH_THRESHOLD, FormNumberMatch
+from app.repositories.fuzzy_match import FormNumberMatch
 from app.repositories.ingestion import IngestionRepository
 from app.repositories.template import TemplateRepository
+from app.services.address.render import render_extracted_data_as_text_tables as render_address_tables
 from app.services.draft.filing_data import FilingLookupResult, resolve_filing_data
+from app.services.fee.render import render_extracted_data_as_text_tables as render_fee_tables
 
 logger = structlog.get_logger(__name__)
 
-# Appended to a "nothing found" tool result so it's not just discarded by
-# the drafting agent as an absent Filing Data section — it explicitly
-# carries the instruction for what to do about it, same rule the system
-# prompt states, restated here so it survives even if that context is
-# crowded out by everything else in a long prompt.
-_NOT_FOUND_INSTRUCTION = (
-    " This is not a value to use — mark it as [GAP: ...] in the draft. Never "
-    "substitute a reference template's value or your own knowledge for this instead."
-)
 
+def _format_fee_result(row: FormFee | None, match: FormNumberMatch) -> FilingLookupResult:
+    if row is None:
+        return FilingLookupResult(matched_form_number=match.form_number, score=match.score, found=False, content="")
 
-def _format_fee_result(form_number: str, rows: list, match: FormNumberMatch) -> FilingLookupResult:
-    if not rows:
-        if match.form_number is None:
-            content = f"No filing fee data found for form '{form_number}'."
-        else:
-            content = (
-                f"No filing fee data found for form '{form_number}' — closest match "
-                f"was '{match.form_number}' at {match.score:.0f}%, below the "
-                f"{FUZZY_MATCH_THRESHOLD:.0f}% match threshold."
-            )
-        content += _NOT_FOUND_INSTRUCTION
-        return FilingLookupResult(
-            matched_form_number=match.form_number, score=match.score, row_count=0, content=content
-        )
-
-    lines = [f"Filing fee data for form '{match.form_number}' ('{rows[0].form_title}'):"]
-    for row in rows:
-        lines.append(
-            f"\n- Filing category: {row.filing_category}\n"
-            f"  Paper filing fee: {row.paper_fee if row.paper_fee is not None else 'not stated'}\n"
-            f"  Online filing fee: {row.online_fee if row.online_fee is not None else 'not stated'}"
-        )
-        if row.fee_details:
-            lines.append(f"  Details: {json.dumps(row.fee_details)}")
+    rendered_tables, context = render_fee_tables(row.extracted_data)
+    lines = [f"Filing fee data for '{row.label}':"]
+    lines.extend(rendered_tables)
+    if context:
+        lines.append(f"Notes: {context}")
     return FilingLookupResult(
         matched_form_number=match.form_number,
         score=match.score,
-        row_count=len(rows),
-        content="\n".join(lines),
+        found=True,
+        content="\n\n".join(lines),
     )
 
 
-def _format_address_result(form_number: str, rows: list, match: FormNumberMatch) -> FilingLookupResult:
-    if not rows:
-        if match.form_number is None:
-            content = f"No filing address data found for form '{form_number}'."
-        else:
-            content = (
-                f"No filing address data found for form '{form_number}' — closest "
-                f"match was '{match.form_number}' at {match.score:.0f}%, below the "
-                f"{FUZZY_MATCH_THRESHOLD:.0f}% match threshold."
-            )
-        content += _NOT_FOUND_INSTRUCTION
-        return FilingLookupResult(
-            matched_form_number=match.form_number, score=match.score, row_count=0, content=content
-        )
+def _format_address_result(row: FormAddress | None, match: FormNumberMatch) -> FilingLookupResult:
+    if row is None:
+        return FilingLookupResult(matched_form_number=match.form_number, score=match.score, found=False, content="")
 
-    lines = [f"Filing address data for form '{match.form_number}' ('{rows[0].form_title}'):"]
-    for row in rows:
-        lines.append(
-            f"\n- Filing scenario: {row.filing_scenario} (applies to: {row.applies_to})\n"
-            f"  Lockbox: {row.lockbox_name}\n"
-            f"  USPS address: {row.usps_address or 'not stated'}\n"
-            f"  Courier address: {row.courier_address or 'not stated'}"
-        )
-        if row.address_details:
-            lines.append(f"  Details: {json.dumps(row.address_details)}")
+    rendered_tables, context = render_address_tables(row.extracted_data)
+    lines = [f"Filing address data for '{row.form_number} — {row.form_title}':"]
+    lines.extend(rendered_tables)
+    if context:
+        lines.append(f"Notes: {context}")
     return FilingLookupResult(
         matched_form_number=match.form_number,
         score=match.score,
-        row_count=len(rows),
-        content="\n".join(lines),
+        found=True,
+        content="\n\n".join(lines),
     )
 
 
@@ -118,29 +79,13 @@ async def resolve_filing_data_node(state: DraftingState) -> dict:
             if ff.ingestion_file_id in files_by_id
         }
 
-        async def get_filing_fee(form_number: str) -> FilingLookupResult:
-            rows, match = await fee_repo.get_by_form_number(form_number)
-            logger.info(
-                "filing_data_fee_fetch_done" if rows else "filing_data_fee_fetch_not_found",
-                case_id=case_id,
-                query=form_number,
-                matched_form_number=match.form_number,
-                score=match.score,
-                row_count=len(rows),
-            )
-            return _format_fee_result(form_number, rows, match)
+        async def get_filing_fee(query: str) -> FilingLookupResult:
+            row, match = await fee_repo.get_by_form_number(query)
+            return _format_fee_result(row, match)
 
-        async def get_filing_address(form_number: str) -> FilingLookupResult:
-            rows, match = await address_repo.get_by_form_number(form_number)
-            logger.info(
-                "filing_data_address_fetch_done" if rows else "filing_data_address_fetch_not_found",
-                case_id=case_id,
-                query=form_number,
-                matched_form_number=match.form_number,
-                score=match.score,
-                row_count=len(rows),
-            )
-            return _format_address_result(form_number, rows, match)
+        async def get_filing_address(query: str) -> FilingLookupResult:
+            row, match = await address_repo.get_by_form_number(query)
+            return _format_address_result(row, match)
 
         filing_data = await resolve_filing_data(
             case_id=case_id,

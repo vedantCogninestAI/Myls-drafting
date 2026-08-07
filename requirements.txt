@@ -11,6 +11,7 @@ cryptography  # required by asyncmy for MySQL 8's caching_sha2_password auth
 
 # LLM / AWS
 boto3
+openai  # fee/address scrapers only — everything else uses Bedrock via boto3
 
 # PDF processing
 pymupdf
@@ -38,3 +39,4 @@ lxml
 # Utils
 typing-extensions
 rapidfuzz
+tabulate

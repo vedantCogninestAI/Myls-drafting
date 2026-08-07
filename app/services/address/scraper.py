@@ -1,241 +1,212 @@
 import asyncio
+import hashlib
+import json
 import re
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from urllib.parse import urljoin
 
 import structlog
-from bs4 import BeautifulSoup
-from firecrawl import AsyncFirecrawlApp
+from firecrawl import AsyncFirecrawl
+from openai import AsyncOpenAI
 
 from app.config import settings
+from app.prompts import ADDRESS_TABLE_EXTRACTION_PROMPT
+from app.repositories.address import AddressRepository
 
 logger = structlog.get_logger(__name__)
 
-_ADDRESS_SIGNAL_RE = re.compile(r"P\.O\. Box|FedEx, UPS, and DHL|U\.S\. Postal Service", re.IGNORECASE)
-_COMBINED_LABEL_RE = re.compile(
-    r"U\.S\.\s*Postal Service\s*\(USPS\),\s*FedEx,\s*UPS,\s*and\s*DHL\s*deliveries:", re.IGNORECASE
-)
-_USPS_LABEL_RE = re.compile(r"U\.S\.\s*Postal Service\s*\(USPS\)(?:\s*deliveries)?:", re.IGNORECASE)
-_COURIER_LABEL_RE = re.compile(r"FedEx,\s*UPS,\s*and\s*DHL\s*deliveries:", re.IGNORECASE)
-_FORM_HEADING_RE = re.compile(r"^([A-Z0-9]+(?:-[A-Z0-9]+)*(?:/[A-Z0-9-]+)?)\s*\|\s*(.+)$")
-_FILING_ADDRESS_LINK_RE = re.compile(r"filing\s+address(es)?", re.IGNORECASE)
-
 _ALL_FORMS_URL = f"{settings.USCIS_BASE_URL}/forms/all-forms"
+
+_FORMS_LIST_RE = re.compile(
+    r"\[([A-Z]+-[0-9A-Za-z]+)\s*\\?\|\s*([^\]]+)\]\((https://www\.uscis\.gov/[^)]+)\)"
+)
+_ADDR_RE = re.compile(
+    r"\]\((https://www\.uscis\.gov/[^)]*(?:addresses|filing-locations)[^)]*)\)", re.I
+)
+_SECTION_RE = re.compile(r"^#{1,6}\s*Where\s+to\s+[Ff]ile\s*$", re.I | re.M)
+_NEXT_HEAD_RE = re.compile(r"^#{1,6}\s+\S", re.M)
 
 
 @dataclass
-class FormEntry:
+class FormListing:
     form_number: str
-    form_name: str
+    title: str
+    url: str
 
 
-def new_client() -> AsyncFirecrawlApp:
-    return AsyncFirecrawlApp(api_key=settings.FIRECRAWL_API_KEY)
-
-
-def _parse_all_forms_page(html: str) -> list[FormEntry]:
-    soup = BeautifulSoup(html, "lxml")
-
-    entries: list[FormEntry] = []
-    seen: set[str] = set()
-    for a in soup.find_all("a"):
-        text = a.get_text(strip=True)
-        match = _FORM_HEADING_RE.match(text)
-        if not match:
+def content_hash(markdown: str) -> str:
+    lines = []
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if not stripped:
             continue
-        form_number, form_name = match.group(1).strip(), match.group(2).strip()
-        if form_number.upper().startswith("DS-"):
+        if "chatwidget" in stripped or "Emma Logo" in stripped:
             continue
-        if form_number in seen:
+        if re.fullmatch(r"\d+", stripped):
             continue
-        seen.add(form_number)
-        entries.append(FormEntry(form_number=form_number, form_name=form_name))
-
-    logger.info("parse_all_forms_page", html_length=len(html), form_count=len(entries))
-    return entries
+        lines.append(stripped)
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
 
 
-async def _fetch(client: AsyncFirecrawlApp, url: str) -> str:
-    result = await client.scrape_url(url, formats=["html"])
-    html = result.html or ""
-    logger.info("uscis_fetch", url=url, html_length=len(html))
-    return html
+def _extract_json(text: str) -> dict:
+    cleaned = text.strip()
+    cleaned = cleaned.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    return json.loads(cleaned)
 
 
-async def fetch_all_forms_list(client: AsyncFirecrawlApp) -> list[FormEntry]:
-    html = await _fetch(client, _ALL_FORMS_URL)
-    return _parse_all_forms_page(html)
+def slice_wtf(markdown: str) -> str:
+    match = _SECTION_RE.search(markdown)
+    if not match:
+        return markdown
+    start = match.end()
+    next_heading = _NEXT_HEAD_RE.search(markdown, start)
+    return markdown[start : next_heading.start() if next_heading else len(markdown)].strip()
 
 
-def _split_address_cell(text: str) -> tuple[str, str | None, str | None]:
-    combined = _COMBINED_LABEL_RE.search(text)
-    if combined:
-        lockbox_name = text[: combined.start()].strip()
-        address = text[combined.end() :].strip()
-        return lockbox_name, address, address
-
-    usps = _USPS_LABEL_RE.search(text)
-    courier = _COURIER_LABEL_RE.search(text)
-
-    if usps and courier:
-        first_start = min(usps.start(), courier.start())
-        lockbox_name = text[:first_start].strip()
-        if usps.start() < courier.start():
-            usps_address = text[usps.end() : courier.start()].strip()
-            courier_address = text[courier.end() :].strip()
-        else:
-            courier_address = text[courier.end() : usps.start()].strip()
-            usps_address = text[usps.end() :].strip()
-        return lockbox_name, usps_address, courier_address
-
-    if usps:
-        return text[: usps.start()].strip(), text[usps.end() :].strip(), None
-
-    if courier:
-        return text[: courier.start()].strip(), None, text[courier.end() :].strip()
-
-    return text.strip(), None, None
-
-
-def _find_filing_scenario(table) -> str | None:
-    panel = table.find_parent("div", class_="accordion__panel")
-    if panel is None:
+def pick_addr(page_markdown: str, form_number: str) -> str | None:
+    links = list(dict.fromkeys(_ADDR_RE.findall(page_markdown)))
+    if not links:
         return None
-    header = panel.find_previous_sibling("h4", class_="accordion__header")
-    if header is None:
-        return None
-    return header.get_text(strip=True)
+    slug = form_number.lower()
+    own = [u for u in links if slug in u.lower()]
+    return own[0] if own else links[0]
 
 
-def _parse_address_page(html: str) -> list[dict]:
-    soup = BeautifulSoup(html, "lxml")
-    rows: list[dict] = []
+def new_firecrawl_client() -> AsyncFirecrawl:
+    return AsyncFirecrawl(api_key=settings.FIRECRAWL_API_KEY)
 
-    tables = [t for t in soup.find_all("table") if t.get("class") and "dataTable" in t.get("class")]
-    for table in tables:
-        filing_scenario = _find_filing_scenario(table) or "General Filing"
-        for tr in table.find_all("tr"):
-            cells = tr.find_all("td")
-            if not cells:
-                continue
 
-            address_cell_text = None
-            other_cell_texts = []
-            for td in cells:
-                cell_text = td.get_text("\n", strip=True)
-                if address_cell_text is None and _ADDRESS_SIGNAL_RE.search(cell_text):
-                    address_cell_text = cell_text
-                else:
-                    other_cell_texts.append(cell_text)
+def new_openai_client() -> AsyncOpenAI:
+    return AsyncOpenAI(api_key=settings.OPENAI_KEY)
 
-            if address_cell_text is None:
-                continue
 
-            applies_to = "\n".join(t for t in other_cell_texts if t) or "General Filing"
-            lockbox_name, usps_address, courier_address = _split_address_cell(address_cell_text)
+async def _fetch_markdown(client: AsyncFirecrawl, url: str, tries: int = 3) -> str:
+    for attempt in range(tries):
+        try:
+            doc = await client.scrape(url, formats=["markdown"], max_age=0)
+            return doc.markdown or ""
+        except Exception as exc:
+            if attempt < tries - 1:
+                await asyncio.sleep(30 if "Rate Limit" in str(exc) else 5)
+            else:
+                raise
 
-            rows.append(
-                {
-                    "filing_scenario": filing_scenario,
-                    "applies_to": applies_to,
-                    "lockbox_name": lockbox_name or "N/A",
-                    "usps_address": usps_address,
-                    "courier_address": courier_address,
-                    "raw_cell_text": address_cell_text,
-                }
+
+async def fetch_form_list(client: AsyncFirecrawl) -> list[FormListing]:
+    markdown = await _fetch_markdown(client, _ALL_FORMS_URL)
+
+    listings = []
+    for code, title, _url in _FORMS_LIST_RE.findall(markdown):
+        listings.append(
+            FormListing(
+                form_number=code,
+                title=title.strip(),
+                url=f"{settings.USCIS_BASE_URL}/{code.lower()}",
+            )
+        )
+    logger.info("fetch_form_list_done", listing_count=len(listings))
+    return listings
+
+
+async def _extract_address_json(openai_client: AsyncOpenAI, wtf_section: str) -> dict:
+    prompt = f"""{ADDRESS_TABLE_EXTRACTION_PROMPT}
+
+Return ONLY valid JSON. No preamble, no markdown fences.
+
+<webpage>
+{wtf_section}
+</webpage>"""
+
+    response = await openai_client.chat.completions.create(
+        model=settings.OPENAI_SCRAPING_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0,
+        max_tokens=16000,
+    )
+    text = response.choices[0].message.content
+    return _extract_json(text)
+
+
+async def _process_form(
+    firecrawl_client: AsyncFirecrawl,
+    openai_client: AsyncOpenAI,
+    existing_hashes: dict[str, str],
+    listing: FormListing,
+) -> dict | None:
+    try:
+        page_markdown = await _fetch_markdown(firecrawl_client, listing.url)
+
+        redirect_url = pick_addr(page_markdown, listing.form_number)
+        has_redirect = bool(redirect_url) and listing.form_number.lower() not in redirect_url.lower()
+        if has_redirect:
+            logger.warning(
+                "address_redirect_detected",
+                form_number=listing.form_number,
+                form_url=listing.url,
+                redirect_url=redirect_url,
             )
 
-    logger.info("parse_address_page", html_length=len(html), table_count=len(tables), row_count=len(rows))
-    return rows
+        wtf_section = slice_wtf(page_markdown)
+        hash_id = content_hash(wtf_section)
 
+        if existing_hashes.get(listing.form_number) == hash_id:
+            logger.info("address_scrape_unchanged", form_number=listing.form_number)
+            return None
 
-def _row_to_address_item(form_number: str, form_title: str, form_url: str | None, row: dict) -> dict:
-    return {
-        "form_number": form_number,
-        "form_title": form_title,
-        "form_url": form_url,
-        "filing_scenario": row["filing_scenario"],
-        "applies_to": row["applies_to"],
-        "lockbox_name": row["lockbox_name"],
-        "usps_address": row["usps_address"],
-        "courier_address": row["courier_address"],
-        "address_details": row,
-    }
-
-
-def _find_address_page_url(html: str, base_url: str) -> str | None:
-    soup = BeautifulSoup(html, "lxml")
-    for a in soup.find_all("a", href=True):
-        if _FILING_ADDRESS_LINK_RE.search(a.get_text(strip=True)):
-            return urljoin(base_url, a["href"])
-    return None
-
-
-async def _fetch_form_addresses(
-    client: AsyncFirecrawlApp, entry: FormEntry
-) -> tuple[list[dict], str | None]:
-    slug = entry.form_number.lower().replace(" ", "-").replace("/", "-")
-    form_page_url = f"{settings.USCIS_BASE_URL}/{slug}"
-    try:
-        form_page_html = await _fetch(client, form_page_url)
+        extracted_data = await _extract_address_json(openai_client, wtf_section)
+        logger.info("address_scrape_updated", form_number=listing.form_number)
+        return {
+            "form_number": listing.form_number,
+            "form_title": listing.title,
+            "form_url": listing.url,
+            "extracted_data": extracted_data,
+            "hash_id": hash_id,
+        }
     except Exception:
-        logger.info("fetch_form_addresses_skipped", form_number=entry.form_number, url=form_page_url)
-        return [], None
-    if not form_page_html:
-        return [], None
-
-    address_url = _find_address_page_url(form_page_html, form_page_url)
-    if address_url is None:
-        # some forms embed their filing addresses directly on the form's own page
-        rows = _parse_address_page(form_page_html)
-        return rows, (form_page_url if rows else None)
-
-    try:
-        address_html = await _fetch(client, address_url)
-    except Exception:
-        logger.info("fetch_form_addresses_skipped", form_number=entry.form_number, url=address_url)
-        return [], None
-    if not address_html:
-        return [], None
-    return _parse_address_page(address_html), address_url
+        logger.exception("address_scrape_failed", form_number=listing.form_number)
+        return None
 
 
-async def scrape_all_addresses(
-    on_batch: Callable[[list[dict]], Awaitable[None]] | None = None,
-) -> list[dict]:
-    client = new_client()
-    entries = await fetch_all_forms_list(client)
+async def scrape_all_addresses(repository: AddressRepository) -> dict:
+    firecrawl_client = new_firecrawl_client()
+    openai_client = new_openai_client()
+
+    listings = await fetch_form_list(firecrawl_client)
+    existing_hashes = await repository.get_all_hashes()
 
     batch_size = settings.SCRAPE_CONCURRENCY
     logger.info(
         "scrape_all_addresses_started",
-        entry_count=len(entries),
+        listing_count=len(listings),
         concurrency=batch_size,
         batch_delay=settings.FEE_SCRAPE_BATCH_DELAY,
     )
-    address_items: list[dict] = []
-    for i in range(0, len(entries), batch_size):
-        batch = entries[i : i + batch_size]
-        batch_results = await asyncio.gather(
-            *(_fetch_form_addresses(client, entry) for entry in batch)
+
+    updated_count = 0
+    skipped_count = 0
+
+    for i in range(0, len(listings), batch_size):
+        batch = listings[i : i + batch_size]
+        results = await asyncio.gather(
+            *(
+                _process_form(firecrawl_client, openai_client, existing_hashes, listing)
+                for listing in batch
+            )
         )
 
-        batch_items: list[dict] = []
-        for entry, (rows, form_url) in zip(batch, batch_results):
-            for row in rows:
-                batch_items.append(
-                    _row_to_address_item(entry.form_number, entry.form_name, form_url, row)
-                )
+        for changed_row in results:
+            if changed_row is None:
+                skipped_count += 1
+                continue
+            await repository.upsert(**changed_row)
+            updated_count += 1
 
-        if on_batch is not None:
-            await on_batch(batch_items)
-        address_items.extend(batch_items)
-
-        if i + batch_size < len(entries):
+        if i + batch_size < len(listings):
             await asyncio.sleep(settings.FEE_SCRAPE_BATCH_DELAY)
 
     logger.info(
-        "scrape_all_addresses_done", entry_count=len(entries), address_item_count=len(address_items)
+        "scrape_all_addresses_done",
+        listing_count=len(listings),
+        updated_count=updated_count,
+        skipped_count=skipped_count,
     )
-    return address_items
+    return {"total": len(listings), "updated": updated_count, "skipped": skipped_count}

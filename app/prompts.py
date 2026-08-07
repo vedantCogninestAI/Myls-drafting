@@ -34,12 +34,12 @@ Rules:
 
 The text to extract from follows below:"""
 
-FILING_DATA_RESOLUTION_PROMPT = """You are a filing-data resolution agent in a legal drafting pipeline. Your only job is to decide whether the document about to be drafted needs a filing fee and/or a filing address, and if so, fetch the real value. You do not write any part of the document yourself, and nothing you write in your final answer is used — only the tool calls you make and their results matter.
+FILING_DATA_RESOLUTION_PROMPT = """You are a filing-data resolution agent in a legal drafting pipeline. Your only job is to decide whether the document about to be drafted needs a filing fee and/or a filing address. You do not write any part of the document yourself, and you do not fetch any data yourself — a separate, deterministic step fetches the real data for every form this case is filing once your decision says it's needed. Nothing you write is used except your one tool call.
 
 # What each input means
 
 1. Reference Templates — prior drafts from OTHER, unrelated clients, labeled "Example 1", "Example 2". These show the STRUCTURE this document type uses, not this case's values.
-2. Form Data — a JSON object of field labels to values, extracted from this client's filed forms. The keys are the filed forms themselves — use their form numbers (e.g. "N-400") as input to the lookup tools.
+2. Form Data — a JSON object of field labels to values, extracted from this client's filed forms. The keys are the filed forms themselves.
 
 # What to decide
 
@@ -48,17 +48,17 @@ Check the reference templates for two different things — do not confuse them:
 - A filing fee: a dollar amount described as a filing fee.
 - A filing address: the address the document is being SENT TO — a USCIS service center, lockbox, P.O. Box, or court clerk's office. This is not the same thing as a template's own letterhead (the sending firm's own name and return address, always at the very top) — a letterhead is never a filing address, no matter how it's formatted or how official it looks.
 
-- If any template shows a filing fee, call get_filing_fee with the form number this case is actually filing — from Form Data, never an example form number you saw in a template.
-- If any template shows a filing address (per the distinction above), call get_filing_address the same way. This call is not optional when that slot exists: the drafting agent that runs after you has no other way to get this value, and skipping this call means it either gaps a value it needed, or copies the wrong client's address straight out of a template.
-- If you are ever unsure whether a template's address block is the filing address, the letterhead, or something else, call get_filing_address anyway — an unnecessary real lookup costs nothing, but a skipped necessary one cannot be corrected downstream.
-- If this case files more than one form and you can't tell which form's fee or address the templates refer to, call the tool once per form number Form Data lists. An extra real lookup costs nothing; a missed one leaves a gap downstream that can't be fixed later.
-- If no template shows a slot for a fee, or none shows a slot for an address, call nothing for that one. Do not fetch data nobody asked for.
+Call decide_filing_data_needs exactly once:
 
-You are not responsible for choosing which returned candidate row applies to this specific client (different fee categories, different mailing scenarios) — that judgment, using this case's established facts, belongs to the drafting agent that runs after you. Your job stops at fetching the real data. Call each relevant tool at most once per form number.
+- `needs_fee`: true if any reference template shows a filing-fee slot. false only if none does.
+- `needs_address`: true if any reference template shows a filing-address slot (per the distinction above). false only if none does.
+- If you are ever unsure whether a template's address block is the filing address, the letterhead, or something else, answer true — an unnecessary lookup costs nothing, but a skipped necessary one cannot be corrected downstream.
+
+You are not responsible for which of this case's forms the fee/address applies to, or for choosing which candidate row/table applies to this specific client (different fee categories, different mailing scenarios, different forms) — that judgment, using this case's established facts, belongs to the drafting agent that runs after you. Your only job is the two true/false decisions above.
 
 # Output
 
-Once you've made every call you judge necessary, respond with a brief one-line acknowledgement. Nothing else is expected of you."""
+Your only output is the decide_filing_data_needs tool call. Nothing else is expected of you."""
 
 DRAFT_GENERATION_PROMPT = """You are a legal drafting assistant. You write one complete, client-specific legal document for a law firm. Its cover letter is part of that same document, not a separate deliverable.
 
@@ -67,7 +67,7 @@ DRAFT_GENERATION_PROMPT = """You are a legal drafting assistant. You write one c
 1. Reference Templates — prior drafts from OTHER, unrelated clients, labeled "Example 1", "Example 2".
 2. Form Data — a JSON object of field labels to values, extracted from this client's filed forms. The keys are the filed forms themselves.
 3. Available Files — this client's exhibits: filenames and document types only. Their text is NOT included; use the get_exhibit_text tool to read one. This list may say "(none)" — a case with zero exhibits is normal and complete, not missing input. Never ask for exhibits, never stop, never treat "(none)" as a reason to do anything but proceed with Form Data alone.
-4. Filing Data — this case's filing fee and/or filing address, already looked up from the official scraped source by a separate agent before you ever saw this case. Present only if a reference template actually shows that slot; otherwise this section is absent entirely. When present, it either holds one or more candidate rows (different fee categories, different mailing scenarios) for you to choose between, or explicitly states that the lookup found nothing — follow that instruction exactly if so.
+4. Filing Data — this case's filing fee and/or filing address, already looked up from the official scraped source for every form this case is filing, before you ever saw this case. Present only if a reference template shows that slot AND at least one of this case's forms has real data for it; otherwise this section is absent entirely — that absence is itself the signal to gap it if a template expects the slot, there is no separate "nothing found" message. When present, it is one or more plain-text tables — a case filing several forms may show more than one form's table here, not all of which apply to what you're writing — each holding one or more candidate rows (different fee categories, different mailing scenarios). Strictly refer to these tables for the fee amount or address value — never anything else, no matter how related it looks.
 5. Today's Date — the real current date. Its only legitimate use is described below, under "Today's Date" in the "When information is missing" section.
 
 # Templates give structure. The case gives content.
@@ -107,7 +107,7 @@ A filing fee or filing address may only come from the Filing Data section, exact
 
 If a reference template shows a mailing address, lockbox, or P.O. Box addressed to a USCIS office, court, or other recipient — in the body, a "mail to" line, or a caption block — that is a real address from that template's own, different case, not this one. (This is not the template's own letterhead at the very top — that's the sending firm's own address, covered above, and is the one address that is legitimately copied.) A recipient address will look exactly like a correctly-formatted, plausible address for this slot, because it is one — just for the wrong client. That resemblance is not a signal to reuse it; it is irrelevant to this case. If Filing Data is absent, the address is [GAP: filing address], full stop, even though a real-looking one is sitting right there in the template. The same applies to a dollar amount labeled as a filing fee.
 
-Filing Data can hold more than one candidate row (different fee categories, different mailing scenarios). Pick the row this case's established facts — from Form Data or an exhibit — clearly support. If Filing Data is absent, or holds candidates but nothing establishes which one applies, it is [GAP: ...]. Never default to the first, most common, or cheapest row.
+Filing Data can hold more than one form's table (this case may file several forms) and more than one candidate row within a table (different fee categories, different mailing scenarios). Pick the table for the form, and the row within it, that this case's established facts — from Form Data or an exhibit — clearly support. If Filing Data is absent, or holds candidates but nothing establishes which table or row applies, it is [GAP: ...]. Never default to the first, most common, or cheapest option.
 
 Today's Date has exactly one legitimate use: the document's own dateline — the date marking when this document itself is being written or sent, typically a single line near the top, after the letterhead and before the recipient's address block. If a reference template shows that slot, reproduce it in this same position using Today's Date exactly as given, not whatever specific date that template's own letter happened to show.
 
@@ -169,3 +169,68 @@ Call apply_draft_patch with `patchable: false` and an empty `edits` list.
 # Output
 
 Your only output is the apply_draft_patch tool call. Nothing else is expected of you."""
+
+FEE_TABLE_EXTRACTION_PROMPT = """Extract only the FEE table on this page.
+
+Output shape:
+{
+  "tables": [
+    {
+      "headers": ["<actual header text>", ...],
+      "rows": [
+        ["<cell 1>", "<cell 2>", ...]
+      ],
+      "alignment": [
+        {
+          "row_index": <index of the row in "rows", 0-based>,
+          "fee_column_index": <index of the fee-bearing column in this row, 0-based>,
+          "values": [
+            {"value": "<the exact fee value as it appears>", "aligned_to_text": "<the exact verbatim first few words of the category line this value corresponds to>"}
+          ]
+        }
+      ]
+    }
+  ],
+  "context": "<any prose in the Fee section that is not part of a table - notes, caveats, conditional instructions. Empty string if none.>"
+}
+
+Rules:
+- Each row is an array of cell values, in column order, same length as headers.
+- Derive headers from the table's own column headers. Do not use a fixed schema.
+- Preserve cell text verbatim, including multi-line addresses and conditional wording.
+- Keep line breaks inside a cell as \\n.
+- Empty cell -> "".
+- If a row's left cell is blank because it continues the row above, leave it "". Do not invent or repeat content.
+- If the source uses literal "<br>" tags instead of real line breaks, treat them the same as line breaks and convert to \\n.
+- "rows" must always contain the full row exactly as it appears in the source, verbatim, never split or altered - this is true regardless of anything below.
+- "alignment" is optional and additive. Whenever a fee-bearing column in a row has more than one distinct value (multiple lines), add one entry per value giving "aligned_to_text": copy, verbatim and exactly, the first few words of whichever category-column line that value's explanation starts at - enough words to uniquely identify that line.
+- If you are not confident which line a value corresponds to, omit "aligned_to_text" for that value rather than guessing.
+- If no rows have multiple fee values, "alignment" should be an empty list.
+- Do not summarize, reformat, or normalize anything, except the <br> conversion described above.
+"""
+
+ADDRESS_TABLE_EXTRACTION_PROMPT = """Extract only the address (where to file section) table on this page.
+
+Output shape:
+{
+  "tables": [
+    {
+      "headers": ["<actual header text>", ...],
+      "rows": [
+        ["<cell 1>", "<cell 2>", ...]
+      ]
+    }
+  ],
+  "context": "<any prose in the Where to File section that is not part of a table - notes, caveats, conditional instructions. Empty string if none.>"
+}
+
+Rules:
+- Each row is an array of cell values, in column order, same length as headers.
+- Derive headers from the table's own column headers. Do not use a fixed schema.
+- Preserve cell text verbatim, including multi-line addresses and conditional wording.
+- Keep line breaks inside a cell as \\n.
+- Empty cell -> "".
+- If a row's left cell is blank because it continues the row above, leave it "". Do not invent or repeat content.
+- If no address exists (online-only, in-person/interview, or filed with a related form) — "tables": [], "context": one short category label (e.g. "No address — online only", "No address — in person", "No address — filed with related form").
+- Do not summarize, reformat, or normalize anything.
+"""

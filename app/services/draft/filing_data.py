@@ -12,84 +12,61 @@ from app.services.llm.client import invoke_with_tools, retry_llm_call
 logger = structlog.get_logger(__name__)
 _executor = ThreadPoolExecutor()
 
-MAX_TOOL_ITERATIONS = 6
-
 
 @dataclass
 class FilingLookupResult:
-    """Result of a get_filing_fee / get_filing_address tool call, for both the
-    tool-result content sent back to the model and the log line describing it."""
+    """Result of one deterministic fee/address lookup for a single ingested
+    form — `found=False` means no scraped row matched, and the caller drops
+    it rather than surfacing a "not found" message to the drafting agent."""
 
     matched_form_number: str | None
     score: float
-    row_count: int
+    found: bool
     content: str
 
 
 @dataclass
 class FilingData:
-    """What resolve_filing_data() hands to the draft-writing agent — raw,
-    unsummarized tool output, or None if no template showed that slot."""
+    """What resolve_filing_data() hands to the draft-writing agent — every
+    real match found across this case's forms, concatenated, or None if
+    nothing was needed or nothing matched."""
 
     fee: str | None
     address: str | None
 
 
-GET_FILING_FEE_TOOL = {
+DECIDE_FILING_DATA_NEEDS_TOOL = {
     "toolSpec": {
-        "name": "get_filing_fee",
+        "name": "decide_filing_data_needs",
         "description": (
-            "Look up the official filing fee(s) for a form number, from the "
-            "authoritative scraped USCIS fee data. Returns every filing-category row "
-            "for that form (e.g. General Filing, reduced-fee, fee waiver)."
+            "Report whether the document being drafted needs a filing fee and/or "
+            "a filing address, based on whether any reference template shows that slot."
         ),
         "inputSchema": {
             "json": {
                 "type": "object",
                 "properties": {
-                    "form_number": {
-                        "type": "string",
-                        "description": "The form number to look up (e.g. 'N-400', 'I-485').",
+                    "needs_fee": {
+                        "type": "boolean",
+                        "description": "True if any reference template shows a filing-fee slot.",
                     },
-                    "reason": {
+                    "fee_reason": {
+                        "type": "string",
+                        "description": "Briefly: which template (if any) shows a filing-fee slot, or why none does.",
+                    },
+                    "needs_address": {
+                        "type": "boolean",
+                        "description": "True if any reference template shows a filing-address slot.",
+                    },
+                    "address_reason": {
                         "type": "string",
                         "description": (
-                            "Briefly: which template showed a filing-fee slot, and "
-                            "which form this case is filing."
+                            "Briefly: which template (if any) shows a filing-address slot, "
+                            "or why none does."
                         ),
                     },
                 },
-                "required": ["form_number", "reason"],
-            }
-        },
-    }
-}
-
-GET_FILING_ADDRESS_TOOL = {
-    "toolSpec": {
-        "name": "get_filing_address",
-        "description": (
-            "Look up the official filing/mailing address(es) for a form number, "
-            "from the authoritative scraped USCIS address data. Returns every "
-            "filing-scenario row for that form (e.g. by state, by military status)."
-        ),
-        "inputSchema": {
-            "json": {
-                "type": "object",
-                "properties": {
-                    "form_number": {
-                        "type": "string",
-                        "description": "The form number to look up (e.g. 'N-400', 'I-485').",
-                    },
-                    "reason": {
-                        "type": "string",
-                        "description": (
-                            "Briefly: which template showed a filing-address slot, and "
-                            "which form this case is filing."
-                        ),
-                    },
-                },
-                "required": ["form_number", "reason"],
+                "required": ["needs_fee", "fee_reason", "needs_address", "address_reason"],
             }
         },
     }
@@ -106,6 +83,33 @@ def _build_initial_message(templates: list[str], form_data: dict[str, dict]) -> 
     )
 
 
+async def _fetch_for_every_form(
+    log,
+    form_data: dict[str, dict],
+    fetcher: Callable[[str], Awaitable[FilingLookupResult]],
+    event_prefix: str,
+) -> list[str]:
+    """Call `fetcher` once per ingested form (keyed by filename, e.g. 'FORM
+    I-360.pdf') and keep only the real matches — a form with no scraped row
+    (e.g. it was never on USCIS's fee-calculator list at all) is dropped
+    rather than turned into a "not found" message, since the drafting
+    agent's own "Filing Data absent -> gap" rule already covers that case
+    correctly without risking a spurious gap for a form that was never
+    fee/address-bearing to begin with."""
+    results = []
+    for filename in form_data:
+        lookup = await fetcher(filename)
+        log.info(
+            f"{event_prefix}_lookup" if lookup.found else f"{event_prefix}_lookup_not_found",
+            query=filename,
+            matched_form_number=lookup.matched_form_number,
+            score=lookup.score,
+        )
+        if lookup.found:
+            results.append(lookup.content)
+    return results
+
+
 async def resolve_filing_data(
     case_id: int,
     process_type: str,
@@ -120,12 +124,6 @@ async def resolve_filing_data(
     messages = [
         {"role": "user", "content": [{"text": _build_initial_message(templates, form_data)}]}
     ]
-    tools = [GET_FILING_FEE_TOOL, GET_FILING_ADDRESS_TOOL]
-    fetchers = {"get_filing_fee": get_filing_fee, "get_filing_address": get_filing_address}
-
-    fee_results: list[str] = []
-    address_results: list[str] = []
-    results_by_tool = {"get_filing_fee": fee_results, "get_filing_address": address_results}
 
     log.info(
         "filing_data_resolution_started",
@@ -133,73 +131,51 @@ async def resolve_filing_data(
         form_data_file_count=len(form_data),
     )
 
-    for iteration in range(1, MAX_TOOL_ITERATIONS + 1):
-        assistant_message, stop_reason = await loop.run_in_executor(
-            _executor,
-            retry_llm_call,
-            invoke_with_tools,
-            messages,
-            tools,
-            FILING_DATA_RESOLUTION_PROMPT,
-        )
-        messages.append(assistant_message)
+    assistant_message, _ = await loop.run_in_executor(
+        _executor,
+        retry_llm_call,
+        invoke_with_tools,
+        messages,
+        [DECIDE_FILING_DATA_NEEDS_TOOL],
+        FILING_DATA_RESOLUTION_PROMPT,
+        "any",
+    )
 
-        if stop_reason != "tool_use":
-            log.info(
-                "filing_data_resolution_done",
-                iterations=iteration,
-                fee_calls=len(fee_results),
-                address_calls=len(address_results),
-            )
-            return FilingData(
-                fee="\n\n".join(fee_results) or None,
-                address="\n\n".join(address_results) or None,
-            )
+    tool_use_blocks = [
+        block["toolUse"] for block in assistant_message["content"] if "toolUse" in block
+    ]
+    if not tool_use_blocks:
+        log.warning("filing_data_resolution_no_tool_call")
+        return FilingData(fee=None, address=None)
 
-        tool_use_blocks = [
-            block["toolUse"] for block in assistant_message["content"] if "toolUse" in block
-        ]
-        tool_result_content = []
+    decision = tool_use_blocks[0]["input"]
+    needs_fee = bool(decision.get("needs_fee"))
+    needs_address = bool(decision.get("needs_address"))
+    log.info(
+        "filing_data_needs_decided",
+        needs_fee=needs_fee,
+        fee_reason=decision.get("fee_reason"),
+        needs_address=needs_address,
+        address_reason=decision.get("address_reason"),
+    )
 
-        for tool_use_block in tool_use_blocks:
-            tool_name = tool_use_block["name"]
-            tool_input = tool_use_block["input"]
-            reason = tool_input.get("reason")
-            tool_use_id = tool_use_block["toolUseId"]
+    fee_results = (
+        await _fetch_for_every_form(log, form_data, get_filing_fee, "filing_data_fee")
+        if needs_fee
+        else []
+    )
+    address_results = (
+        await _fetch_for_every_form(log, form_data, get_filing_address, "filing_data_address")
+        if needs_address
+        else []
+    )
 
-            if tool_name in fetchers:
-                form_number = tool_input["form_number"]
-                lookup = await fetchers[tool_name](form_number)
-                result_text = lookup.content
-                # Appended regardless of row_count — a "nothing found" result
-                # (see _NOT_FOUND_INSTRUCTION in graph/nodes/filing_data.py)
-                # must still reach the drafting agent's Filing Data section,
-                # not be silently dropped to a bare None indistinguishable
-                # from "this document never needed the value at all."
-                results_by_tool[tool_name].append(lookup.content)
-                log.info(
-                    "filing_data_resolution_tool_call",
-                    tool=tool_name,
-                    iteration=iteration,
-                    query=form_number,
-                    matched_form_number=lookup.matched_form_number,
-                    match_score=lookup.score,
-                    row_count=lookup.row_count,
-                    reason=reason,
-                    result=lookup.content,
-                )
-            else:
-                log.error("filing_data_resolution_unknown_tool", tool=tool_name, iteration=iteration)
-                result_text = f"Unknown tool '{tool_name}'."
-
-            tool_result_content.append(
-                {"toolResult": {"toolUseId": tool_use_id, "content": [{"text": result_text}]}}
-            )
-
-        messages.append({"role": "user", "content": tool_result_content})
-
-    log.warning(
-        "filing_data_resolution_max_iterations_exceeded", max_iterations=MAX_TOOL_ITERATIONS
+    log.info(
+        "filing_data_resolution_done",
+        needs_fee=needs_fee,
+        needs_address=needs_address,
+        fee_matches=len(fee_results),
+        address_matches=len(address_results),
     )
     return FilingData(
         fee="\n\n".join(fee_results) or None,

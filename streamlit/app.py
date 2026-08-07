@@ -561,8 +561,38 @@ with tab_scrape:
     if "fees_data" in st.session_state:
         st.divider()
         st.subheader("Fees")
-        st.dataframe(st.session_state["fees_data"], use_container_width=True)
+        fees_data = st.session_state["fees_data"]
+        if not fees_data:
+            st.info("No fee data yet — trigger a scrape first.")
+        else:
+            selected_idx = st.selectbox(
+                "Form",
+                options=range(len(fees_data)),
+                format_func=lambda i: fees_data[i]["label"],
+                key="fee_label_select",
+            )
+            selected = fees_data[selected_idx]
+            st.caption(selected["form_url"])
+            if selected["context"]:
+                st.write(selected["context"])
+            for table_text in selected["rendered_tables"]:
+                st.code(table_text, language=None)
     elif "addresses_data" in st.session_state:
         st.divider()
         st.subheader("Addresses")
-        st.dataframe(st.session_state["addresses_data"], use_container_width=True)
+        addresses_data = st.session_state["addresses_data"]
+        if not addresses_data:
+            st.info("No address data yet — trigger a scrape first.")
+        else:
+            selected_idx = st.selectbox(
+                "Form",
+                options=range(len(addresses_data)),
+                format_func=lambda i: f"{addresses_data[i]['form_number']} — {addresses_data[i]['form_title']}",
+                key="address_form_select",
+            )
+            selected = addresses_data[selected_idx]
+            st.caption(selected["form_url"])
+            if selected["context"]:
+                st.write(selected["context"])
+            for table_text in selected["rendered_tables"]:
+                st.code(table_text, language=None)

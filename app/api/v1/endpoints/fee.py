@@ -5,7 +5,8 @@ from app.core.db import AsyncSessionLocal, get_db
 from app.repositories.fee import FeeRepository
 from app.schemas.fee import FormFeeItem, ScrapeFeesResponse
 from app.services.fee.fee_service import run_fee_scrape
-from app.services.fee.scraper import fetch_form_list, new_client
+from app.services.fee.render import render_extracted_data_as_text_tables
+from app.services.fee.scraper import fetch_form_list, new_firecrawl_client
 
 router = APIRouter()
 
@@ -18,7 +19,7 @@ async def _run_scrape_job() -> None:
 
 @router.post("/scrape", response_model=ScrapeFeesResponse)
 async def scrape_fees(background_tasks: BackgroundTasks) -> ScrapeFeesResponse:
-    client = new_client()
+    client = new_firecrawl_client()
     listings = await fetch_form_list(client)
 
     background_tasks.add_task(_run_scrape_job)
@@ -30,17 +31,17 @@ async def scrape_fees(background_tasks: BackgroundTasks) -> ScrapeFeesResponse:
 async def list_fees(session: AsyncSession = Depends(get_db)) -> list[FormFeeItem]:
     repository = FeeRepository(session)
     records = await repository.list_all()
-    return [
-        FormFeeItem(
-            form_number=record.form_number,
-            form_title=record.form_title,
-            form_url=record.form_url,
-            filing_category=record.filing_category,
-            paper_fee=record.paper_fee,
-            online_fee=record.online_fee,
-            paper_fee_text=record.fee_details.get("Paper Filing Fee") or record.fee_details.get("Paper Fee"),
-            online_fee_text=record.fee_details.get("Online Filing Fee") or record.fee_details.get("Online Fee"),
-            fee_details=record.fee_details,
+    items = []
+    for record in records:
+        rendered_tables, context = render_extracted_data_as_text_tables(record.extracted_data)
+        items.append(
+            FormFeeItem(
+                topic_id=record.topic_id,
+                label=record.label,
+                form_url=record.form_url,
+                rendered_tables=rendered_tables,
+                context=context,
+                hash_id=record.hash_id,
+            )
         )
-        for record in records
-    ]
+    return items

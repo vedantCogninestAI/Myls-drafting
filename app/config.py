@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     FEE_SCRAPE_BATCH_DELAY: int = 5
     FIRECRAWL_API_KEY: str = ""
 
+    # Fee scraping — OpenAI only (every other LLM call in this app uses Bedrock)
+    OPENAI_KEY: str = ""
+    OPENAI_SCRAPING_MODEL: str = "gpt-4o-mini"
+
     # LLM
     LLM_MAX_RETRIES: int = 3
 
