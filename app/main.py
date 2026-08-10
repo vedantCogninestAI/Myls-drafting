@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.router import router as v1_router
 from app.config import settings
 from app.core.logging import setup_logging
-from app.graph.checkpointer import create_graph_and_conn
+from app.graph.main_graph import build_graph
 from app.middleware.request_logging import RequestLoggingMiddleware
 
 # Some async DB drivers require a SelectorEventLoop; Windows defaults to
@@ -38,11 +38,8 @@ async def lifespan(app: FastAPI):
         aws_region=settings.AWS_REGION,
         log_level=settings.LOG_LEVEL,
     )
-    app.state.checkpointer_conn, app.state.graph = await create_graph_and_conn()
-    try:
-        yield
-    finally:
-        app.state.checkpointer_conn.close()
+    app.state.graph = build_graph()
+    yield
 
 
 def create_app() -> FastAPI:

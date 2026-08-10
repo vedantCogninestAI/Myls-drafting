@@ -52,7 +52,7 @@ def _format_address_result(row: FormAddress | None, match: FormNumberMatch) -> F
 
 async def resolve_filing_data_node(state: DraftingState) -> dict:
     case_id = state["case_id"]
-    revision_count = state.get("draft_revision_count", 0) + 1
+    revision_count = 1
     logger.info("resolve_filing_data_node_started", case_id=case_id)
 
     async with AsyncSessionLocal() as session:

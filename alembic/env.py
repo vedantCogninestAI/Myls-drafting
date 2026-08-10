@@ -15,6 +15,7 @@ from app.config import settings
 from app.models.address import FormAddress  # noqa: F401
 from app.models.base import Base
 from app.models.case import Case  # noqa: F401
+from app.models.draft_session import DraftSession  # noqa: F401
 from app.models.fee import FormFee  # noqa: F401
 from app.models.ingestion import FormFields, IngestionFile  # noqa: F401
 from app.models.template import Template  # noqa: F401

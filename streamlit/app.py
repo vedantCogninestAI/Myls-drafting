@@ -434,7 +434,7 @@ with tab_draft:
         prefixes=("capped_",),
     )
 
-    st.header("Draft Generation & Review")
+    st.header("Draft Generation & Revision")
     d_case = case_select("Case name", key="draft_case")
     d_process_type = process_type_select("Process type", key="draft_process_type")
 
@@ -444,7 +444,10 @@ with tab_draft:
         if "draft_threads" not in st.session_state:
             st.session_state["draft_threads"] = {}
         thread_key = (d_case, d_process_type)
-        rounds = st.session_state["draft_threads"].setdefault(thread_key, [])
+        thread = st.session_state["draft_threads"].setdefault(
+            thread_key, {"session_id": None, "rounds": []}
+        )
+        rounds = thread["rounds"]
 
         for i, rnd in enumerate(rounds, start=1):
             with st.chat_message("assistant"):
@@ -458,14 +461,11 @@ with tab_draft:
                 )
                 with st.expander(f"Preview draft v{i}", expanded=(i == len(rounds))):
                     render_docx_preview(rnd["draft_bytes"])
-            if rnd["decision"] is not None:
+            if rnd["feedback"] is not None:
                 with st.chat_message("user"):
-                    if rnd["decision"] == "Approve":
-                        st.write("Approved")
-                    else:
-                        st.write(f"Rejected — feedback: {rnd['feedback']}")
+                    st.write(f"Revision requested — feedback: {rnd['feedback']}")
 
-        pending = bool(rounds) and rounds[-1]["decision"] is None
+        capped = st.session_state.get(f"capped_{thread_key}", False)
 
         if not rounds:
             if st.button("Generate draft", key="gen_draft_btn"):
@@ -473,53 +473,37 @@ with tab_draft:
                 resp = api_post(f"/draft/{path_segment(d_case)}/{path_segment(d_process_type)}/generate")
                 overlay.empty()
                 if resp is not None and resp.ok:
-                    rounds.append(
-                        {"draft_bytes": resp.content, "decision": None, "feedback": None}
-                    )
+                    thread["session_id"] = resp.headers.get("X-Session-Id")
+                    rounds.append({"draft_bytes": resp.content, "feedback": None})
                     st.rerun()
                 else:
                     show_error(resp)
-        elif pending:
+        elif capped:
+            st.warning("Max revisions reached for this session — no further revisions possible.")
+        else:
+            st.success("Latest draft above is treated as final unless you request a revision below.")
             round_num = len(rounds)
-            st.subheader("Review this draft")
-            decision = st.radio("Decision", ["Approve", "Reject"], key=f"decision_{thread_key}_{round_num}")
-            feedback = st.text_area(
-                "Feedback (required if rejecting)", key=f"feedback_{thread_key}_{round_num}"
-            )
-            if st.button("Submit review", key=f"submit_{thread_key}_{round_num}"):
-                if decision == "Reject" and not feedback.strip():
-                    st.warning("Feedback is required when rejecting.")
+            st.subheader("Request a revision (optional)")
+            feedback = st.text_area("Feedback", key=f"feedback_{thread_key}_{round_num}")
+            if st.button("Submit revision", key=f"submit_{thread_key}_{round_num}"):
+                if not feedback.strip():
+                    st.warning("Feedback is required to request a revision.")
                 else:
-                    body = {"approved": decision == "Approve", "feedback": feedback or None}
-                    overlay_msg = (
-                        "Regenerating draft with your feedback..."
-                        if decision == "Reject"
-                        else "Finalizing approval..."
-                    )
-                    overlay = show_loading_overlay(overlay_msg)
+                    overlay = show_loading_overlay("Revising draft with your feedback...")
                     resp = api_post(
-                        f"/draft/{path_segment(d_case)}/{path_segment(d_process_type)}/approve",
-                        json=body,
+                        f"/draft/revise/{thread['session_id']}",
+                        json={"feedback": feedback},
                     )
                     overlay.empty()
                     if resp is not None and resp.ok:
-                        rounds[-1]["decision"] = decision
-                        rounds[-1]["feedback"] = feedback if decision == "Reject" else None
-                        approved = resp.headers.get("X-Approved") == "true"
-                        max_reached = resp.headers.get("X-Max-Revisions-Reached") == "true"
-                        if not approved and not max_reached:
-                            rounds.append(
-                                {"draft_bytes": resp.content, "decision": None, "feedback": None}
-                            )
-                        elif max_reached:
-                            st.session_state[f"capped_{thread_key}"] = True
+                        rounds[-1]["feedback"] = feedback
+                        rounds.append({"draft_bytes": resp.content, "feedback": None})
+                        st.rerun()
+                    elif resp is not None and resp.status_code == 409:
+                        st.session_state[f"capped_{thread_key}"] = True
                         st.rerun()
                     else:
                         show_error(resp)
-        elif rounds[-1]["decision"] == "Approve":
-            st.success("Draft approved — this session is complete.")
-        elif st.session_state.get(f"capped_{thread_key}"):
-            st.warning("Max revisions reached without approval — this session has ended.")
 
 # ---- Fee / Address Data ----
 with tab_scrape:
